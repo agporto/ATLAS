@@ -61,7 +61,9 @@ Once a preprint / DOI is available, update this section.
 ## Updating ATLAS
 
 * **Manual clone**: `git pull` in the repository folder, then restart Slicer.
+
 * **Built extension**: Rebuild (`cmake --build`) then reinstall package (or refresh build directory path).
+
 * If parameters or data formats change, re‑ingest databases using the DATABASE module.
 
 ---
@@ -71,43 +73,36 @@ ATLAS organizes functionality into three scripted modules:
 
 ### BUILDER
 **Category:** Atlas & Correspondence Generation  
+
 **Purpose:** Align a set of meshes and sparse landmark sets; automatically pick a reference (closest to mean), similarity-align all specimens, generate a mean (atlas) surface, and derive dense correspondences via TPS warp + k‑d tree mapping. Optionally downsamples to produce a sparser, index‑stable subset.  
+
 **Key Outputs:** Timestamped output folder containing aligned meshes (`*_align.ply`), aligned landmarks (`*_align.mrk.json`), `mean/atlasModel.ply`, `mean/atlasLMs.mrk.json`, and sampled dense set (`atlas.mrk.json`).  
+
 **Notable Features:** Robust base selection; flexible file stem resolution; index preservation during downsampling.
 
 ### DATABASE
-**Category:** Statistical Shape Modeling  
+
+**Category:** Statistical Shape Modeling
+
 **Purpose:** Build a PCA SSM from a folder of dense correspondences; store as a lightweight on‑disk database with manifest; load into scene for interactive mode exploration.  
+
 **Workflow:** Ingest → validate consistent point counts → SVD (variance threshold) → save mean, modes, eigenvalues.  
+
 **Visualization:** Single-PC slider + spinbox; deforms mesh in real time using k‑NN interpolation (weights from inverse distance) between landmark displacements and all vertices.  
+
 **Outputs:** `manifest.json`, `ssm_model.npz`, copied template and markup files.
 
 ### PREDICT
-**Category:** Automated Landmark Transfer  
+**Category:** Automated Landmark Transfer 
+
 **Purpose:** Transfer template sparse landmarks to a target mesh (single or batch) via multi-stage alignment: subsampling & FPFH features → RANSAC + ICP rigid alignment → PCA‑guided Coherent Point Drift (CPD) deformable registration → optional surface projection refinement.  
+
 **Modes:**
 * Single specimen alignment (tune parameters, inspect intermediate clouds/models)  
 * Batch processing (reuse tuned parameters; cancellation + progress)  
 * Template optimization (continuous search in SSM space + RANSAC scoring to refine initial template pose/shape)  
+
 **Outputs:** Predicted landmark `.mrk.json` files, warped template models (scene), optionally refined projected landmarks.
-
-#### Core Algorithm Stack
-| Stage | Method | Notes |
-|-------|--------|-------|
-| Subsampling | Voxel grid (voxel from bounding box / point density) | Reduces complexity |
-| Features | FPFH descriptors (tiny3d) | For RANSAC correspondence | 
-| Rigid init | RANSAC (edge length + distance check) | Iterative fallback if fitness low |
-| Refinement | Point-to-plane ICP | Improves rigid transform |
-| Deformable | PCA‑guided CPD (biocpd) | Modes rotated into rigid frame; outlier weighting |
-| Warp propagation | k‑NN displacement interpolation | Applies to model + sparse landmarks |
-| Projection (optional) | Normal-based bidirectional ray casting | Caps max distance fraction |
-
-#### Key Parameters (Advanced Tab)
-* `pointDensity` – affects subsampling voxel size.
-* `distanceThreshold` / `ICPDistanceThreshold` – rigid alignment tolerances.
-* `alpha`, `beta`, `w`, `tolerance`, `max_iterations` – PCA‑CPD control.
-* `skipScaling` – disable pre-normalization of template/target size.
-* `projectionFactor` – fraction of model length allowed for projection rays.
 
 ---
 ## Dependencies
@@ -123,15 +118,6 @@ If installation is denied or blocked (e.g., no network), deformable or feature s
 ```bash
 /path/to/Slicer --python-code "import sys, subprocess; [subprocess.check_call([sys.executable,'-m','pip','install',p]) for p in ('tiny3d','biocpd')]"
 ```
-
-### Optional / Recommended Slicer Extensions
-| Extension | Why |
-|-----------|-----|
-| SegmentEditorExtraEffects | Enhanced segmentation (if you combine segmentation & landmark workflows). |
-| SlicerIGT | Additional registration utilities (for validation / comparison). |
-| Sandbox / SurfaceMarkups | If experimenting with alternative markup types. |
-
-None are strictly required.
 
 ---
 ## Related / Complementary Extensions

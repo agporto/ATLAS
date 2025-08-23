@@ -1,5 +1,9 @@
 <!-- ATLAS README -->
 
+<p align="center">
+	<img src="logo.png" alt="ATLAS Logo" width="220"/>
+</p>
+
 # ATLAS: Automated Template-based Landmark Alignment System
 
 ATLAS is a companion extension to **SlicerMorph**, focused on high‑fidelity, scalable generation and transfer of 3D anatomical landmarks and dense correspondences using atlas construction, Statistical Shape Models (SSMs), and PCA‑guided deformable registration.
@@ -149,7 +153,15 @@ If ATLAS development is supported by specific grants, list them here. (Placehold
 
 ---
 ## License
-No explicit license file is currently included. Add a `LICENSE` (e.g., MIT, BSD-3-Clause, or GPL) to clarify reuse. Until then, reuse rights are ambiguous.
+Released under the **BSD 2-Clause License**. See the [`LICENSE`](LICENSE) file for full text.
+
+Key points:
+* Copyright © 2025 Arthur Porto
+* Permits use, modification, and redistribution in source or binary form
+* Requires preservation of copyright notice & disclaimer in redistributions
+* Provided “AS IS” without warranty
+
+If you redistribute modified versions, please retain attribution and clearly document changes.
 
 ---
 ## About

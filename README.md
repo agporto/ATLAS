@@ -1,7 +1,7 @@
 <!-- ATLAS README -->
 
 <p align="center">
-	<img src="logo.png" alt="ATLAS Logo" width="220"/>
+	<img src="logo.png" alt="ATLAS Logo" width="500"/>
 </p>
 
 # ATLAS: Automated Template-based Landmark Alignment System

@@ -44,7 +44,7 @@ When ATLAS becomes available through the Extension Manager, install it like any 
 	```bash
 	git clone https://github.com/agporto/ATLAS.git
 	```
-2. Add the cloned top‑level folder to Slicer: `Edit > Application Settings > Modules > Additional Module Paths` → Add path → Restart.
+2. Add the cloned top‑level folder to Slicer using the main dropdown menu: `Developer Tools> Extension Wizard` → Select Extension → Select Folder.
 3. Open one of the ATLAS modules (BUILDER, DATABASE, PREDICT) to confirm load.
 
 ### 3. Cloud / Remote Environments

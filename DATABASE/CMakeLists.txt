@@ -1,10 +1,3 @@
-# PREDICT/CMakeLists.txt — Scripted module
-cmake_minimum_required(VERSION 3.16.3)
-
-# Uses Slicer-provided macros
-find_package(Slicer REQUIRED)
-include(${Slicer_USE_FILE})
-
 #-----------------------------------------------------------------------------
 set(MODULE_NAME DATABASE)
 
@@ -24,3 +17,11 @@ slicerMacroBuildScriptedModule(
   RESOURCES ${MODULE_PYTHON_RESOURCES}
   WITH_GENERIC_TESTS
   ) 
+
+#-----------------------------------------------------------------------------
+if(BUILD_TESTING)
+
+  # Register the unittest subclass in the main script as a ctest.
+  # Note that the test will also be available at runtime.
+  slicer_add_python_unittest(SCRIPT ${MODULE_NAME}.py)
+endif()

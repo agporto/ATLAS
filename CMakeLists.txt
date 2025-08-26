@@ -1,5 +1,5 @@
 # ATLAS/CMakeLists.txt — Extension root
-cmake_minimum_required(VERSION 3.16.3)
+cmake_minimum_required(VERSION 3.5)
 
 project(ATLAS)
 
@@ -23,4 +23,5 @@ add_subdirectory(DATABASE)
 
 
 # Packaging, testing
+include(${Slicer_EXTENSION_GENERATE_CONFIG})
 include(${Slicer_EXTENSION_CPACK})

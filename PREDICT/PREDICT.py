@@ -867,87 +867,161 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       keep = [i for i in range(U.shape[2]) if i not in set(drop_modes)]; U = U[:,:,keep]; eig = eig[keep]
     return mean, U, eig
 
-  def initialize_template(self, tableNode, srcModelNode, srcCorrNode, srcLmNode, tgtModelNode, parameters, k=8, span=2.0, optimizer="powell", max_evals=120, eval_ransac_iters=30000, final_ransac_iters=150000, seed=0):
-    import tiny3d as t3d
-    mean, U, eig = self._ssm_unpack(tableNode); k = min(k, U.shape[2])
+  def initialize_template(self, tableNode, srcModelNode, srcCorrNode, srcLmNode, tgtModelNode, parameters,
+                        k=8, span=2.0, optimizer="powell", max_evals=120,
+                        eval_ransac_iters=30000, final_ransac_iters=150000, seed=0):
+    import numpy as np, tiny3d as t3d
+    # ---- SSM unpack + fast sampler ----
+    mean, U, eig = self._ssm_unpack(tableNode)
+    k = int(min(k, U.shape[2])); k_eff = max(1, k)
+    eig_k = eig[:k]; sqrt_eig_k = np.sqrt(eig_k)
+    M = mean.shape[0]
+    Uw_flat = (U[:, :, :k].reshape(-1, k) * sqrt_eig_k[None, :])  # (3M × k)
+    mean_flat = mean.reshape(-1)
+
+    def ssm_sample(b):  # (k,) -> (M,3)
+        return (mean_flat + Uw_flat @ np.asarray(b, float)).reshape(M, 3)
+
+    # ---- Frame: scale target to SSM size (only for evaluation) ----
+    def bbox_diag_np(P): P = np.asarray(P); return float(np.linalg.norm(P.max(0) - P.min(0)))
     oldCorr = slicer.util.arrayFromMarkupsControlPoints(srcCorrNode)
-    def bbox_diag_np(pts_np): pts_np=np.asarray(pts_np); return float(np.linalg.norm(pts_np.max(0) - pts_np.min(0)))
     tgt_np = slicer.util.arrayFromModelPoints(tgtModelNode)
     tgt_pcd = t3d.geometry.PointCloud(); tgt_pcd.points = t3d.utility.Vector3dVector(tgt_np)
     s0 = bbox_diag_np(mean) / (bbox_diag_np(tgt_np) + 1e-12)
     tgt_scaled = t3d.geometry.PointCloud(tgt_pcd); tgt_scaled.scale(s0, center=tgt_scaled.get_center())
+
+    # ---- Geometry: coarse→fine targets ----
     size_scaled = float(np.linalg.norm(tgt_scaled.get_max_bound() - tgt_scaled.get_min_bound()))
-    voxel = size_scaled / (25.0 * parameters.get("pointDensity", 1.0))
-    tgt_down, tgt_fpfh = self.preprocess_point_cloud(tgt_scaled, voxel, parameters.get("normalSearchRadius", 2), parameters.get("FPFHSearchRadius", 5))
-    dist_thresh = voxel * parameters.get("distanceThreshold", 3)
-    cand_pcd = t3d.geometry.PointCloud(); rn_factor = int(parameters.get("subsetNormalRadius", parameters.get("normalSearchRadius", 2)))
-    rf_factor = int(parameters.get("subsetFPFHRadius", parameters.get("FPFHSearchRadius", 5)))
-    sp_norm = t3d.geometry.KDTreeSearchParamHybrid(radius=voxel * rn_factor, max_nn=20)
-    sp_feat = t3d.geometry.KDTreeSearchParamHybrid(radius=voxel * rf_factor, max_nn=60)
-    def cand_features(pts_np):
-      cand_pcd.points = t3d.utility.Vector3dVector(pts_np); cand_pcd.estimate_normals(sp_norm)
-      fpfh = t3d.pipelines.registration.compute_fpfh_feature(cand_pcd, sp_feat); return cand_pcd, fpfh
-    best = {"score": -np.inf, "b": None, "fit": None, "rmse": None, "T": None}; cache = {}
-    w_rmse = 0.30; w_reg  = 1e-2; LARGE = 1e6; bound_margin=1e-6
-    def clip_b(b): return np.clip(b, -span, span)
-    def ssm_sample(b):
-      b = np.asarray(b, float); kk=b.size; w = b * np.sqrt(eig[:kk])
-      delta = np.tensordot(U[:, :, :kk], w, axes=([2], [0])); return mean + delta
-    def score_b(b, iters):
-      b = clip_b(np.asarray(b, float)); key = tuple(np.round(b,6))
-      if key in cache: return cache[key]["neg_score"]
-      kk=b.size; reg = float(np.sum((b*b) / (eig[:kk] + 1e-12)))
-      ub = 1.0 - w_reg * reg
-      if best["score"] > -np.inf and ub <= best["score"] - bound_margin:
-        neg = LARGE + reg; cache[key] = {"neg_score": neg}; return neg
-      newCorr = ssm_sample(b)
-      if newCorr.shape != oldCorr.shape: cache[key] = {"neg_score": LARGE}; return LARGE
-      cand_down, cand_fpfh = cand_features(newCorr)
-      try:
-        result = t3d.pipelines.registration.registration_ransac_based_on_feature_matching(
-          cand_down, tgt_down, cand_fpfh, tgt_fpfh, True, dist_thresh,
-          t3d.pipelines.registration.TransformationEstimationPointToPoint(False), 3,
-          [t3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9), t3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(dist_thresh)],
-          t3d.pipelines.registration.RANSACConvergenceCriteria(int(iters), float(parameters.get("confidence", 0.9))),)
-      except Exception:
-        cache[key] = {"neg_score": LARGE}; return LARGE
-      ev = t3d.pipelines.registration.evaluate_registration(cand_down, tgt_down, dist_thresh, result.transformation)
-      fit, rmse = float(ev.fitness), float(ev.inlier_rmse)/(dist_thresh+1e-12)
-      if (not np.isfinite(fit)) or fit >= 0.9999:
-        neg = LARGE
-      else:
-        score = fit - w_rmse * rmse - w_reg * reg; neg = -score
-        if score > best["score"]: best.update(score=score, b=b.copy(), fit=fit, rmse=rmse, T=result.transformation.copy())
-      cache[key] = {"neg_score": neg}; return neg
-    x0 = np.zeros(k, float); bounds = [(-span, span)] * k; rng = np.random.default_rng(seed)
-    def make_candidates(n, span): X = rng.random((n, k))*2 - 1; return X * span
-    def axis_seeds(span, m=None, levels=(1.0,)): m = min(k, m if m is not None else k); I = np.eye(k)[:m]; S = [ a*span*I for a in levels ] + [ -a*span*I for a in levels ]; return np.vstack(S)
-    def rank_candidates(cands, evals): vals = [score_b(clip_b(c), evals) for c in cands]; order = np.argsort(vals); return [cands[i] for i in order], [vals[i] for i in order]
-    def successive_halving(cands, budgets=(0.03,0.12), keep=(24,6)):
-      C=cands
-      for f, n_keep in zip(budgets, keep): C,_=rank_candidates(C, max(1,int(f*eval_ransac_iters))); C=C[:min(n_keep,len(C))]
-      return C
-    N = 64; cand_rand = make_candidates(N, span); cand_axis = axis_seeds(span, m=min(k,10), levels=(1.0, 0.5))
-    cand = np.unique(np.round(np.vstack([cand_rand, cand_axis]), 6), axis=0); cand_top=successive_halving(cand, budgets=(0.03,0.12), keep=(24,6))
+    voxel_f = size_scaled / (25.0 * float(parameters.get("pointDensity", 1.0)))
+    voxel_c = voxel_f * 3.25  # slightly coarser than before for speed
+    rn = int(parameters.get("normalSearchRadius", 2))
+    rf = int(parameters.get("FPFHSearchRadius", 5))
+    tgt_down_f, tgt_fpfh_f = self.preprocess_point_cloud(tgt_scaled, voxel_f, rn, rf)
+    tgt_down_c, tgt_fpfh_c = self.preprocess_point_cloud(tgt_scaled, voxel_c, max(1, rn // 2), max(2, rf // 2))
+    dist_f = voxel_f * float(parameters.get("distanceThreshold", 3.0))
+    dist_c = voxel_c * float(parameters.get("distanceThreshold", 3.0))
+
+    # ---- Candidate set: Sobol + axis seeds ----
+    try:
+        from scipy.stats import qmc
+        N = int(parameters.get("init_candidates", 192)); N = max(96, N)
+        dpow = int(np.ceil(np.log2(max(2, N))))
+        Sob = qmc.scale(qmc.Sobol(d=k, scramble=True, seed=seed).random_base2(dpow)[:N], -span, span)
+    except Exception:
+        rng = np.random.default_rng(seed); Sob = rng.uniform(-span, span, size=(max(96, int(parameters.get("init_candidates", 192))), k))
+    m = min(k, 10)
+    axis = []
+    for a in (1.0, 0.5):
+        A = np.zeros((m, k)); A[np.arange(m), np.arange(m)] =  a * span; axis.append(A)
+        A = np.zeros((m, k)); A[np.arange(m), np.arange(m)] = -a * span; axis.append(A)
+    cand = np.unique(np.round(np.vstack([Sob, *axis]), 6), axis=0)
+
+    # ---- Objective weights (consistent prior) ----
+    rho = float(parameters.get("reg_strength", 0.15))
+    w_rmse = float(parameters.get("w_rmse", 0.30))
+    w_reg = min(rho / k_eff, 0.25 / (k_eff * (span**2) + 1e-12))  # keeps ub sane at |b|=span
+    LARGE = 1e6; bound_margin = float(parameters.get("bound_margin", 1e-4))
+
+    def clip_b(b): return np.clip(np.asarray(b, float), -span, span)
+
+    # ---- Feature builders (cached) ----
+    cand_pcd = t3d.geometry.PointCloud()
+    sp_norm_c = t3d.geometry.KDTreeSearchParamHybrid(radius=voxel_c * max(1, int(parameters.get("subsetNormalRadius", rn)) // 2), max_nn=20)
+    sp_feat_c = t3d.geometry.KDTreeSearchParamHybrid(radius=voxel_c * max(2, int(parameters.get("subsetFPFHRadius", rf)) // 2), max_nn=60)
+    sp_norm_f = t3d.geometry.KDTreeSearchParamHybrid(radius=voxel_f * float(parameters.get("subsetNormalRadius", rn)), max_nn=30)
+    sp_feat_f = t3d.geometry.KDTreeSearchParamHybrid(radius=voxel_f * float(parameters.get("subsetFPFHRadius", rf)), max_nn=100)
+
+    max_pts_cand_coarse = int(parameters.get("maxFeatPtsCoarse", 1800))  # cap candidate points for coarse FPFH
+    rng = np.random.default_rng(seed)
+    feat_cache = {}  # {(b_tuple, coarse): (cand_down, cand_fpfh, td, tf, dth)}
+
+    def get_feat(b, coarse):
+        key = (tuple(np.round(np.asarray(b, float), 6)), bool(coarse))
+        if key in feat_cache: return feat_cache[key]
+        pts = ssm_sample(b)
+        if coarse and (max_pts_cand_coarse > 0) and (len(pts) > max_pts_cand_coarse):
+            idx = rng.choice(len(pts), size=max_pts_cand_coarse, replace=False)
+            pts = pts[idx]
+        cand_pcd.points = t3d.utility.Vector3dVector(pts)
+        if coarse:
+            cand_pcd.estimate_normals(sp_norm_c); fpfh = t3d.pipelines.registration.compute_fpfh_feature(cand_pcd, sp_feat_c)
+            pack = (cand_pcd, fpfh, tgt_down_c, tgt_fpfh_c, dist_c)
+        else:
+            cand_pcd.estimate_normals(sp_norm_f); fpfh = t3d.pipelines.registration.compute_fpfh_feature(cand_pcd, sp_feat_f)
+            pack = (cand_pcd, fpfh, tgt_down_f, tgt_fpfh_f, dist_f)
+        feat_cache[key] = pack; return pack
+
+    # ---- Scoring (with cache + early bound) ----
+    best = {"score": -np.inf, "b": None, "fit": None, "rmse": None, "T": None}
+    cache = {}  # {(b_tuple, coarse, iters): neg}
+
+    def eval_one(b, iters, coarse):
+        cand_down, cand_fpfh, td, tf, dth = get_feat(b, coarse)
+        r = t3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+            cand_down, td, cand_fpfh, tf, True, dth,
+            t3d.pipelines.registration.TransformationEstimationPointToPoint(False), 3,
+            [t3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
+             t3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(dth)],
+            t3d.pipelines.registration.RANSACConvergenceCriteria(int(iters), float(parameters.get("confidence", 0.9))))
+        ev = t3d.pipelines.registration.evaluate_registration(cand_down, td, dth, r.transformation)
+        return r.transformation, float(ev.fitness), float(ev.inlier_rmse) / (dth + 1e-12)
+
+    def score_geom(b, iters, coarse):
+        b = clip_b(b)
+        key = (tuple(np.round(b, 6)), bool(coarse), int(iters))
+        if key in cache: return cache[key]["neg"]
+        reg = float(np.dot(b, b))
+        ub = 1.0 - w_reg * reg
+        if best["score"] > -np.inf and ub <= best["score"] - bound_margin:
+            cache[key] = {"neg": LARGE + reg}; return cache[key]["neg"]
+        if ssm_sample(b).shape != oldCorr.shape:
+            cache[key] = {"neg": LARGE}; return cache[key]["neg"]
+        try:
+            T, fit, rmse = eval_one(b, iters, coarse)
+        except Exception:
+            cache[key] = {"neg": LARGE}; return cache[key]["neg"]
+        score = fit - w_rmse * rmse - w_reg * reg
+        if np.isfinite(score) and score > best["score"]:
+            best.update(score=score, b=b.copy(), fit=float(fit), rmse=float(rmse), T=T.copy())
+        cache[key] = {"neg": -score}; return cache[key]["neg"]
+
+    # ---- Bandit schedule (smaller budgets, fewer keeps) ----
+    budgets = [0.005, 0.02, 0.10]  # fractions of eval_ransac_iters
+    keeps   = [96,    24,   6]
+    C = cand.tolist()
+    it = max(1, int(budgets[0] * eval_ransac_iters)); C = sorted(C, key=lambda x: score_geom(x, it, True ))[:min(keeps[0], len(C))]
+    it = max(1, int(budgets[1] * eval_ransac_iters)); C = sorted(C, key=lambda x: score_geom(x, it, True ))[:min(keeps[1], len(C))]
+    it = max(1, int(budgets[2] * eval_ransac_iters)); C = sorted(C, key=lambda x: score_geom(x, it, False))[:min(keeps[2], len(C))]
+
+    # ---- Local refine: only best finalist, half budget ----
+    x0 = np.zeros(k, float)
     if optimizer.lower() == "de":
-      res = differential_evolution(lambda x: score_b(x, eval_ransac_iters), bounds=bounds, strategy="best1bin", popsize=8, maxiter=max(1, max_evals // 8), tol=1e-3, polish=False, seed=seed, updating="deferred", workers=1)
-      b_star = np.clip(res.x, -span, span)
+        from scipy.optimize import differential_evolution
+        bounds = [(-span, span)] * k
+        res = differential_evolution(lambda x: score_geom(x, eval_ransac_iters, False), bounds=bounds,
+                                     strategy="best1bin", popsize=8, maxiter=max(1, max_evals // 8),
+                                     tol=1e-3, polish=False, seed=seed, updating="deferred", workers=1)
+        b_star = clip_b(res.x)
     else:
-      starts=[x0]+([cand_top[0], cand_top[1]] if len(cand_top)>1 else [])
-      per_budget = max(1, int(max_evals / len(starts))); best_val=np.inf; best_x=None
-      for s in starts:
-        r = minimize(lambda x: score_b(x, eval_ransac_iters), x0=np.clip(s, -span, span), method="Powell", options={"maxfev": per_budget, "xtol":1e-3, "ftol":1e-3, "disp":False})
-        if r.fun < best_val: best_x, best_val = r.x, r.fun
-      b_star = np.clip(best_x, -span, span)
-    _ = score_b(b_star, final_ransac_iters)
+        from scipy.optimize import minimize
+        start = C[0] if len(C) else x0
+        per = max(1, int(0.5 * max_evals))
+        r = minimize(lambda x: score_geom(x, eval_ransac_iters, False), x0=clip_b(start),
+                     method="Powell", options={"maxfev": per, "xtol": 1e-3, "ftol": 1e-3, "disp": False})
+        b_star = clip_b(r.x if (hasattr(r, "x") and r.x is not None) else start)
+
+    _ = score_geom(b_star, final_ransac_iters, False)
     if best["b"] is None: raise RuntimeError("Optimization failed to find a valid candidate.")
-    b_best, T_best, fit, rmse = best["b"], best["T"], best["fit"], best["rmse"]
+
+    # ---- Commit best shape, no rigid applied here ----
+    b_best, T_best = best["b"], best["T"]
     newCorr = ssm_sample(b_best); disp = newCorr - oldCorr; warp_tree = cKDTree(oldCorr)
     srcModelNode.CreateDefaultDisplayNodes(); self.warp_node(node_to_warp=srcModelNode, tree=warp_tree, disp=disp)
-    if srcLmNode: self.warp_node(node_to_warp=srcLmNode, tree=warp_tree, disp=disp)
+    if srcLmNode is not None: self.warp_node(node_to_warp=srcLmNode, tree=warp_tree, disp=disp)
     slicer.util.updateMarkupsControlPointsFromArray(srcCorrNode, newCorr)
-    print(f"[opt] picked ||b||={np.linalg.norm(b_best):.3f}  fitness={fit:.3f}  rmse={rmse:.3f}  evals≈{len(cache)}")
+    print(f"[opt] ||b||={np.linalg.norm(b_best):.3f} fit={best['fit']:.3f} rmse={best['rmse']:.3f} evals≈{len(cache)}")
     return b_best, T_best
+
 
 class PREDICTTest(ScriptedLoadableModuleTest):
   def setUp(self): slicer.mrmlScene.Clear(0)

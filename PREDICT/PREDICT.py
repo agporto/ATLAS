@@ -702,7 +702,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           mean_shape=None,
           U=U_aligned,
           eigenvalues=eigvals_eff,          # no external scaling/flooring
-          lambda_reg=float(parameters.get("lambda_reg", 0.4)),  # no scale² here
+          lambda_reg=float(parameters.get("lambda_reg", 0.2)),  # no scale² here
           alpha=float(parameters.get("alpha", 2.0)),
           w=float(parameters.get("w", 0.1)),
           tolerance=float(parameters.get("tolerance", 1e-6)),
@@ -868,8 +868,8 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     return mean, U, eig
 
   def initialize_template(self, tableNode, srcModelNode, srcCorrNode, srcLmNode, tgtModelNode, parameters,
-                        k=8, span=2.0, optimizer="powell", max_evals=120,
-                        eval_ransac_iters=30000, final_ransac_iters=150000, seed=0):
+                        k=10, span=3.0, optimizer="powell", max_evals=240,
+                        eval_ransac_iters=50000, final_ransac_iters=200000, seed=0):
     import numpy as np, tiny3d as t3d
     # ---- SSM unpack + fast sampler ----
     mean, U, eig = self._ssm_unpack(tableNode)
@@ -908,7 +908,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
         dpow = int(np.ceil(np.log2(max(2, N))))
         Sob = qmc.scale(qmc.Sobol(d=k, scramble=True, seed=seed).random_base2(dpow)[:N], -span, span)
     except Exception:
-        rng = np.random.default_rng(seed); Sob = rng.uniform(-span, span, size=(max(96, int(parameters.get("init_candidates", 192))), k))
+        rng = np.random.default_rng(seed); Sob = rng.uniform(-span, span, size=(max(96, int(parameters.get("init_candidates", 384))), k))
     m = min(k, 10)
     axis = []
     for a in (1.0, 0.5):
@@ -917,10 +917,10 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     cand = np.unique(np.round(np.vstack([Sob, *axis]), 6), axis=0)
 
     # ---- Objective weights (consistent prior) ----
-    rho = float(parameters.get("reg_strength", 0.15))
+    rho = float(parameters.get("reg_strength", 0.10))
     w_rmse = float(parameters.get("w_rmse", 0.30))
     w_reg = min(rho / k_eff, 0.25 / (k_eff * (span**2) + 1e-12))  # keeps ub sane at |b|=span
-    LARGE = 1e6; bound_margin = float(parameters.get("bound_margin", 1e-4))
+    LARGE = 1e6; bound_margin = float(parameters.get("bound_margin", 1e-5))
 
     def clip_b(b): return np.clip(np.asarray(b, float), -span, span)
 
@@ -964,14 +964,20 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
              t3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(dth)],
             t3d.pipelines.registration.RANSACConvergenceCriteria(int(iters), float(parameters.get("confidence", 0.9))))
         ev = t3d.pipelines.registration.evaluate_registration(cand_down, td, dth, r.transformation)
-        return r.transformation, float(ev.fitness), float(ev.inlier_rmse) / (dth + 1e-12)
+        size_td = float(np.linalg.norm(td.get_max_bound()-td.get_min_bound()))
+        rmse_n = ev.inlier_rmse / (size_td + 1e-12)
+
+        return r.transformation, float(ev.fitness), float(rmse_n) / (dth + 1e-12)
+
+    iL = 1.0/(eig_k + 1e-12)
 
     def score_geom(b, iters, coarse):
         b = clip_b(b)
         key = (tuple(np.round(b, 6)), bool(coarse), int(iters))
         if key in cache: return cache[key]["neg"]
-        reg = float(np.dot(b, b))
-        ub = 1.0 - w_reg * reg
+        reg = float(b @ (iL * b))                      # Mahalanobis
+        # either loosen or drop this bound:
+        ub = 1.0 + 1e-4 - w_reg * reg
         if best["score"] > -np.inf and ub <= best["score"] - bound_margin:
             cache[key] = {"neg": LARGE + reg}; return cache[key]["neg"]
         if ssm_sample(b).shape != oldCorr.shape:
@@ -980,14 +986,14 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
             T, fit, rmse = eval_one(b, iters, coarse)
         except Exception:
             cache[key] = {"neg": LARGE}; return cache[key]["neg"]
-        score = fit - w_rmse * rmse - w_reg * reg
+        score = fit - w_rmse*rmse - w_reg*reg
         if np.isfinite(score) and score > best["score"]:
             best.update(score=score, b=b.copy(), fit=float(fit), rmse=float(rmse), T=T.copy())
         cache[key] = {"neg": -score}; return cache[key]["neg"]
 
     # ---- Bandit schedule (smaller budgets, fewer keeps) ----
-    budgets = [0.005, 0.02, 0.10]  # fractions of eval_ransac_iters
-    keeps   = [96,    24,   6]
+    budgets = [0.01, 0.04, 0.2]  # fractions of eval_ransac_iters
+    keeps   = [192,    48,   12]
     C = cand.tolist()
     it = max(1, int(budgets[0] * eval_ransac_iters)); C = sorted(C, key=lambda x: score_geom(x, it, True ))[:min(keeps[0], len(C))]
     it = max(1, int(budgets[1] * eval_ransac_iters)); C = sorted(C, key=lambda x: score_geom(x, it, True ))[:min(keeps[1], len(C))]

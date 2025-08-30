@@ -327,11 +327,11 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     ingestLayout.addRow("Template Model:", self.ssmTemplateModelSelector)
     self.ssmTemplateLandmarksSelector = ctk.ctkPathLineEdit()
     self.ssmTemplateLandmarksSelector.filters = ctk.ctkPathLineEdit.Files
-    self.ssmTemplateLandmarksSelector.nameFilters=["*.fcsv", "*.json"]
+    self.ssmTemplateLandmarksSelector.nameFilters=["*.json", "*.fcsv"]
     ingestLayout.addRow("Dense Correspondences:", self.ssmTemplateLandmarksSelector)
     self.ssmSparseLandmarksSelector = ctk.ctkPathLineEdit()
     self.ssmSparseLandmarksSelector.filters = ctk.ctkPathLineEdit.Files
-    self.ssmSparseLandmarksSelector.nameFilters = ["*.fcsv", "*.json"]
+    self.ssmSparseLandmarksSelector.nameFilters = ["*.json", "*.fcsv"]
     ingestLayout.addRow("Sparse Landmarks:", self.ssmSparseLandmarksSelector)
     self.ssmPopulationDirSelector = ctk.ctkPathLineEdit()
     self.ssmPopulationDirSelector.filters = ctk.ctkPathLineEdit.Dirs

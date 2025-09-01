@@ -118,6 +118,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     {"key":"w","kind":"dspin","label":"Outlier weight (w)","section":"PCA-CPD registration","min":0.0,"max":0.5,"step":0.01,"value":0.10,"decimals":3},
     {"key":"tolerance","kind":"dspin","label":"Tolerance","section":"PCA-CPD registration","min":1e-8,"max":1e-2,"step":1e-6,"value":1e-6,"decimals":8},
     {"key":"max_iterations","kind":"spin","label":"Max iterations","section":"PCA-CPD registration","min":100,"max":1000,"step":50,"value":250},
+    {"key":"lambda_reg","kind":"dspin","label":"SSM weight (lambda_reg)","section":"PCA-CPD registration","min":0.0,"max":5.0,"step":0.05,"value":0.4}
   ]
 
   def _make_selector(self, types, attr_key=None, attr_val=None, tooltip=None, none=False):
@@ -656,16 +657,24 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       with slicer.util.NodeModify(node_to_warp): slicer.util.updateMarkupsControlPointsFromArray(node_to_warp, new_points)
 
   def interpolate_displacements(self, verts, tree, disp, k=12, sigma=None):
-    d, idx = tree.query(verts, k=k)
-    if sigma is None: sigma = np.median(d[:, -1]) + 1e-12
-    w = np.exp(-(d**2) / (2 * sigma**2)); w /= (w.sum(1, keepdims=True) + 1e-12)
-    return (disp[idx] * w[..., None]).sum(1)
+      d, idx = tree.query(verts, k=max(4, int(k)))
+      if d.ndim == 1: d = d[:,None]; idx = idx[:,None]
+      if sigma is None:
+          sigma = max(1e-6, float(np.median(d[:, -1])))
+      w = np.exp(-(d**2) / (2.0 * (sigma**2)))
+      w_sum = w.sum(1, keepdims=True); w /= (w_sum + 1e-12)
+      return (disp[idx] * w[..., None]).sum(1)
 
-  def smoothModel(self, modelNode, iterations=10, passBand=0.08):
-    if not modelNode or not modelNode.GetPolyData(): logging.error("Invalid model node for smoothing."); return
-    f = vtk.vtkWindowedSincPolyDataFilter(); f.SetInputData(modelNode.GetPolyData())
-    f.SetNumberOfIterations(iterations); f.SetPassBand(passBand); f.NormalizeCoordinatesOff(); f.Update()
-    modelNode.SetAndObservePolyData(f.GetOutput())
+  def smoothModel(self, modelNode, iterations=8, passBand=0.1):
+      f = vtk.vtkWindowedSincPolyDataFilter()
+      f.SetInputData(modelNode.GetPolyData())
+      f.SetNumberOfIterations(iterations)
+      f.SetPassBand(passBand)      # slightly higher pass band
+      f.BoundarySmoothingOn()
+      f.FeatureEdgeSmoothingOff()
+      f.NormalizeCoordinatesOff()
+      f.Update()
+      modelNode.SetAndObservePolyData(f.GetOutput())
 
   def runDeformable(self, tableNode, sourceLM, scale, targetSLM, parameters):
       from biocpd.atlas_registration import AtlasRegistration
@@ -817,7 +826,8 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     return pcd_down, pcd_fpfh
 
   def runPointProjection(self, template, model, templateLandmarks, maxProjectionFactor):
-    maxProjection = (model.GetPolyData().GetLength()) * maxProjectionFactor
+    bb = np.array(model.GetPolyData().GetBounds(), float).reshape(3,2)
+    maxProjection = np.linalg.norm(bb[:,1] - bb[:,0]) * maxProjectionFactor
     templatePoints = self.getFiducialPoints(templateLandmarks)
     normalFilter = vtk.vtkPolyDataNormals(); normalFilter.SetInputData(template.GetPolyData()); normalFilter.ComputePointNormalsOn(); normalFilter.SplittingOff(); normalFilter.Update()
     sourcePolydata = normalFilter.GetOutput()
@@ -893,7 +903,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     # ---- Geometry: coarse→fine targets ----
     size_scaled = float(np.linalg.norm(tgt_scaled.get_max_bound() - tgt_scaled.get_min_bound()))
     voxel_f = size_scaled / (25.0 * float(parameters.get("pointDensity", 1.0)))
-    voxel_c = voxel_f * 3.25  # slightly coarser than before for speed
+    voxel_c = voxel_f * 1.5  # slightly coarser than before for speed
     rn = int(parameters.get("normalSearchRadius", 2))
     rf = int(parameters.get("FPFHSearchRadius", 5))
     tgt_down_f, tgt_fpfh_f = self.preprocess_point_cloud(tgt_scaled, voxel_f, rn, rf)
@@ -967,7 +977,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
         size_td = float(np.linalg.norm(td.get_max_bound()-td.get_min_bound()))
         rmse_n = ev.inlier_rmse / (size_td + 1e-12)
 
-        return r.transformation, float(ev.fitness), float(rmse_n) / (dth + 1e-12)
+        return r.transformation, float(ev.fitness), float(rmse_n)
 
     iL = 1.0/(eig_k + 1e-12)
 
@@ -976,9 +986,10 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
         key = (tuple(np.round(b, 6)), bool(coarse), int(iters))
         if key in cache: return cache[key]["neg"]
         reg = float(b @ (iL * b))                      # Mahalanobis
-        # either loosen or drop this bound:
-        ub = 1.0 + 1e-4 - w_reg * reg
-        if best["score"] > -np.inf and ub <= best["score"] - bound_margin:
+        rmse_headroom = 0.05
+        ub = 1.0 - w_rmse*0.0 - w_reg*reg
+        lb_best = best["score"] - (w_rmse * rmse_headroom)
+        if best["score"] > -np.inf and ub <= lb_best - bound_margin:
             cache[key] = {"neg": LARGE + reg}; return cache[key]["neg"]
         if ssm_sample(b).shape != oldCorr.shape:
             cache[key] = {"neg": LARGE}; return cache[key]["neg"]

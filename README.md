@@ -14,6 +14,7 @@ It streamlines:
 * Constructing and persisting PCA Statistical Shape Models for variation exploration
 * Single and batch automated landmark transfer with robust rigid + PCA‑CPD deformable alignment and optional surface projection
 * Continuous optimization of the template (pose + shape) before large batch runs
+* Segmentation of the 3D model into parts
 
 > If you are new to 3D Slicer or SlicerMorph, begin with SlicerMorph tutorials first. ATLAS assumes you already understand loading models, markups, and basic scene management.
 
@@ -45,7 +46,7 @@ When ATLAS becomes available through the Extension Manager, install it like any 
 	git clone https://github.com/agporto/ATLAS.git
 	```
 2. Add the cloned top‑level folder to Slicer using the main dropdown menu: `Developer Tools> Extension Wizard` → Select Extension → Select Folder.
-3. Open one of the ATLAS modules (BUILDER, DATABASE, PREDICT) to confirm load.
+3. Open one of the ATLAS modules (BUILDER, DATABASE, PREDICT, SEGMENTATION) to confirm load.
 
 ### 3. Cloud / Remote Environments
 If you use a cloud Slicer image (e.g., MorphoCloud) you can clone the repo into a writable workspace and add the module path as above. Ensure outbound network allowed for Python dependency install (see below).
@@ -59,21 +60,10 @@ Porto, A. (2025). ATLAS: Automated Template-based Landmark Alignment System. Git
 ```
 Also cite **SlicerMorph** (Rolfe et al. 2021, Methods in Ecology and Evolution) and 3D Slicer (Kikinis et al. 2014) where appropriate. If you use the underlying PCA‑CPD method (biocpd) or tiny3d backend, consult their respective citations.
 
-Once a preprint / DOI is available, update this section.
-
----
-## Updating ATLAS
-
-* **Manual clone**: `git pull` in the repository folder, then restart Slicer.
-
-* **Built extension**: Rebuild (`cmake --build`) then reinstall package (or refresh build directory path).
-
-* If parameters or data formats change, re‑ingest databases using the DATABASE module.
-
 ---
 ## Module Descriptions
 
-ATLAS organizes functionality into three scripted modules:
+ATLAS organizes functionality into four scripted modules:
 
 ### BUILDER
 **Category:** Atlas & Correspondence Generation  
@@ -118,11 +108,6 @@ On first use of PREDICT, a dialog offers to install:
 * **`tiny3d`** – lightweight point cloud / registration toolkit (Open3D style API)
 * **`biocpd`** – PCA‑guided CPD atlas registration
 
-If installation is denied or blocked (e.g., no network), deformable or feature stages will fail; install manually in Slicer’s Python environment:
-```bash
-/path/to/Slicer --python-code "import sys, subprocess; [subprocess.check_call([sys.executable,'-m','pip','install',p]) for p in ('tiny3d','biocpd')]"
-```
-
 ---
 ## Related / Complementary Extensions
 * **SlicerMorph** – Broader morphology workflows (import, GPA, semi-landmarks, ALPACA).
@@ -149,17 +134,11 @@ Planned documents (placeholders):
 
 ---
 ## Funding Acknowledgement
-If ATLAS development is supported by specific grants, list them here. (Placeholder – update with award numbers if applicable.)
+Coming soon
 
 ---
 ## License
 Released under the **BSD 2-Clause License**. See the [`LICENSE`](LICENSE) file for full text.
-
-Key points:
-* Copyright © 2025 Arthur Porto
-* Permits use, modification, and redistribution in source or binary form
-* Requires preservation of copyright notice & disclaimer in redistributions
-* Provided “AS IS” without warranty
 
 If you redistribute modified versions, please retain attribution and clearly document changes.
 
@@ -193,12 +172,8 @@ If you redistribute modified versions, please retain attribution and clearly doc
 Enable `View > Error Log` in Slicer for stack traces; include logs in Issues.
 
 ---
-## Roadmap (Planned Enhancements)
-* GPU acceleration (TPS, k‑NN) where available
-* Parameter preset export/import (JSON)
-* CLI batch wrapper (headless)
-* Expanded test coverage & CI
 
 ---
 *Last updated:* 2025-08-23
+
 

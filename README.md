@@ -58,7 +58,7 @@ If you use ATLAS in publications, please cite (placeholder until formal publicat
 ```
 Porto, A. (2025). ATLAS: Automated Template-based Landmark Alignment System. GitHub repository. https://github.com/agporto/ATLAS
 ```
-Also cite **SlicerMorph** (Rolfe et al. 2021, Methods in Ecology and Evolution) and 3D Slicer (Kikinis et al. 2014) where appropriate. If you use the underlying PCA‑CPD method (biocpd) or tiny3d backend, consult their respective citations.
+Also cite **SlicerMorph** (Rolfe et al. 2021, Methods in Ecology and Evolution) and 3D Slicer (Kikinis et al. 2014) where appropriate. If you use the BUILDER module, please cite **DeCA** (Rolfe and Maga , 2023).  If you use the underlying PCA‑CPD method (biocpd) or tiny3d backend, consult their respective citations.
 
 ---
 ## Module Descriptions
@@ -175,5 +175,6 @@ Enable `View > Error Log` in Slicer for stack traces; include logs in Issues.
 
 ---
 *Last updated:* 2025-08-23
+
 
 

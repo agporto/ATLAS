@@ -129,6 +129,7 @@ Planned documents (placeholders):
 ## Important Websites
 * 3D Slicer: https://www.slicer.org
 * SlicerMorph: https://slicermorph.github.io
+* DeCA: https://github.com/SlicerMorph/SlicerDenseCorrespondenceAnalysis
 * ATLAS repository: https://github.com/agporto/ATLAS
 * Slicer Forum (support/discussion): https://discourse.slicer.org (use the `morphology` or `extensions` categories).
 
@@ -175,6 +176,7 @@ Enable `View > Error Log` in Slicer for stack traces; include logs in Issues.
 
 ---
 *Last updated:* 2025-08-23
+
 
 
 

@@ -2,8 +2,6 @@ import os, logging, copy, json, threading, importlib, numpy as np
 import vtk, qt, ctk, slicer
 from slicer.ScriptedLoadableModule import *
 import vtk.util.numpy_support as vtk_np
-from scipy.spatial import cKDTree
-from scipy.optimize import minimize, differential_evolution
 
 # ---------- Small utilities----------
 COLORS = {"red":(1,0.2,0.2), "green":(0.2,1,0.2), "blue":(0.2,0.2,1)}
@@ -69,7 +67,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     qt.QTimer.singleShot(0, lambda: self._ensure_deps_async())
 
   # ----- Dependencies installer (async-safe) -----
-  def _ensure_deps_async(self, on_ready=None):
+  def _ensure_deps_async(self):
     import importlib.util, traceback, sys, subprocess
     required=[("tiny3d","tiny3d"),("biocpd","biocpd")]
     missing=[m for m,_ in required if importlib.util.find_spec(m) is None]
@@ -96,25 +94,70 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
             slicer.util.errorDisplay(f"PREDICT install failed:\n{e}\n{tb}"); return
         if self._deps_ready:
             slicer.util.showStatusMessage("PREDICT: dependencies ready", 3000)
-            if callable(on_ready): on_ready(); return
+            return
         qt.QTimer.singleShot(150, poll)
     qt.QTimer.singleShot(0, poll)
+
+
+  # ----- Visual helpers -----
+  def _activeCameraAndView(self):
+    lm = slicer.app.layoutManager()
+    view = lm.threeDWidget(0).threeDView()
+    viewNode = view.mrmlViewNode()
+    camNode = slicer.modules.cameras.logic().GetViewActiveCameraNode(viewNode)
+    return camNode.GetCamera(), view
+
+  def _focusOnNode(self, node, keepOrientation=True, margin=1.15):
+      cam, view = self._activeCameraAndView()
+
+      # bounds → center & radius
+      b = np.array(node.GetPolyData().GetBounds(), float).reshape(3, 2)
+      center = b.mean(1)
+      maxdim = np.max(b[:, 1] - b[:, 0])
+      r = 0.5 * maxdim * float(margin)
+
+      # keep current az/el unless asked otherwise
+      if keepOrientation:
+          fp = np.array(cam.GetFocalPoint())
+          pos = np.array(cam.GetPosition())
+          vdir = fp - pos
+          if np.linalg.norm(vdir) < 1e-9:
+              vdir = np.array([0, 0, -1.0])
+          vdir = vdir / np.linalg.norm(vdir)
+          up = np.array(cam.GetViewUp())
+      else:
+          vdir = np.array([0, 0, -1.0]); up = np.array([0, 1, 0])
+
+      # distance to fit vertically
+      fovy = np.deg2rad(float(cam.GetViewAngle()))
+      dist = r / max(np.tan(fovy / 2.0), 1e-6)
+
+      # set camera
+      cam.SetFocalPoint(*center.tolist())
+      cam.SetPosition(*(center - vdir * dist).tolist())
+      cam.SetViewUp(*up.tolist())
+      cam.SetClippingRange(max(dist - 3 * r, 1e-3), dist + 3 * r)
+      view.scheduleRender()
 
   # ----- Parameter schema (declarative Advanced tab) -----
   PARAMS = [
     {"key":"skipScaling","kind":"check","label":"Skip scaling","section":"General Settings","value":False},
     {"key":"skipProjection","kind":"check","label":"Skip projection","section":"General Settings","value":False},
     {"key":"skipOptimization","kind":"check","label":"Skip template optimization (batch)","section":"General Settings","value":False},
-    {"key":"pointDensity","kind":"slider","label":"Point Density","section":"Point density and max projection","min":0.1,"max":3.0,"step":0.1,"value":1.0},
-    {"key":"projectionFactor","kind":"slider","label":"Max projection factor (%)","section":"Point density and max projection","min":0,"max":10,"step":1.0,"value":1.0},
+    {"key":"pointDensity","kind":"slider","label":"Point Density","section":"Point density and max projection","min":0.1,"max":3.0,"step":0.1,"value":1.3},
+    {"key":"projectionFactor","kind":"slider","label":"Max projection factor (%)","section":"Point density and max projection","min":0,"max":10,"step":0.1,"value":1.0},
     {"key":"normalSearchRadius","kind":"slider","label":"Normal search radius","section":"Rigid registration","min":2,"max":12,"step":1,"value":2},
     {"key":"FPFHSearchRadius","kind":"slider","label":"FPFH search radius","section":"Rigid registration","min":3,"max":20,"step":1,"value":5},
     {"key":"distanceThreshold","kind":"slider","label":"RANSAC distance threshold","section":"Rigid registration","min":0.5,"max":4.0,"step":0.25,"value":1.5},
     {"key":"maxRANSAC","kind":"spin","label":"Max RANSAC iterations","section":"Rigid registration","min":1,"max":50_000_000,"step":1,"value":400_000},
     {"key":"confidence","kind":"dspin","label":"RANSAC confidence","section":"Rigid registration","min":0.0,"max":1.0,"step":0.001,"value":0.999},
     {"key":"ICPDistanceThreshold","kind":"slider","label":"ICP distance threshold","section":"Rigid registration","min":0.1,"max":2.0,"step":0.1,"value":0.4},
+    {"key":"useBiharmonic","kind":"check","label":"Experimental: Use biharmonic surface warp","section":"Deformation backend","value":False},
+    {"key":"tpsLambda","kind":"dspin","label":"TPS smoothing (λ)","section":"Deformation backend","min":0.0,"max":10.0,"step":0.01,"value":0.0},
+    {"key":"tpsMaxCorr","kind":"spin","label":"TPS max constraints","section":"Deformation backend","min":20,"max":5000,"step":20,"value":800},
     {"key":"alpha","kind":"dspin","label":"Rigidity (alpha)","section":"PCA-CPD registration","min":0.1,"max":10.0,"step":0.1,"value":2.0},
     {"key":"beta","kind":"dspin","label":"Motion coherence (beta)","section":"PCA-CPD registration","min":0.1,"max":10.0,"step":0.1,"value":2.0},
+    {"key":"skipFineCPD","kind":"check", "label":"Fossil mode (SSM-only)", "section":"PCA-CPD registration","value":False},
     {"key":"w","kind":"dspin","label":"Outlier weight (w)","section":"PCA-CPD registration","min":0.0,"max":0.5,"step":0.01,"value":0.10,"decimals":3},
     {"key":"tolerance","kind":"dspin","label":"Tolerance","section":"PCA-CPD registration","min":1e-8,"max":1e-2,"step":1e-6,"value":1e-6,"decimals":8},
     {"key":"max_iterations","kind":"spin","label":"Max iterations","section":"PCA-CPD registration","min":100,"max":1000,"step":50,"value":250},
@@ -200,6 +243,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.displayWarpedModelButton=qt.QPushButton("Show registration"); self.displayWarpedModelButton.enabled=False; singleL.addRow(self.displayWarpedModelButton)
     self.resetButton=qt.QPushButton("Reset"); singleL.addRow(self.resetButton)
 
+
     # --- Batch Processing ---
     multi=ctk.ctkCollapsibleButton(); multi.text="Transfer landmark points from a source mesh to a directory of target meshes"; multiL=qt.QFormLayout(multi)
     alignMultiTabLayout.addRow(multi)
@@ -223,9 +267,22 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.d2sourceSparseFiducialSelector = self._make_selector(["vtkMRMLMarkupsFiducialNode"]); optL.addRow("Template Landmarks:", self.d2sourceSparseFiducialSelector)
     self.d2targetModelSelector          = self._make_selector(["vtkMRMLModelNode"]); optL.addRow("Target model:", self.d2targetModelSelector)
     self.d2ssmTableSelector             = self._make_selector(["vtkMRMLTableNode"], attr_key="ssm_eigenvalues", attr_val=None); optL.addRow("SSM Data Table:", self.d2ssmTableSelector)
-    self.pcGridSteps=qt.QSpinBox(); self.pcGridSteps.minimum=2; self.pcGridSteps.maximum=9; self.pcGridSteps.value=3; self.pcGridSteps.setToolTip("Grid steps per PC"); optL.addRow("Grid steps / PC:", self.pcGridSteps)
-    self.ransacItersPerCand=qt.QSpinBox(); self.ransacItersPerCand.minimum=10000; self.ransacItersPerCand.maximum=2000000; self.ransacItersPerCand.singleStep=10000; self.ransacItersPerCand.value=150000; optL.addRow("RANSAC iters (per candidate):", self.ransacItersPerCand)
+    self.pcGridSteps=qt.QSpinBox(); self.pcGridSteps.minimum=2; self.pcGridSteps.maximum=35; self.pcGridSteps.value=4; self.pcGridSteps.setToolTip("Grid steps per PC"); optL.addRow("Grid steps / PC:", self.pcGridSteps)
+    self.ransacItersPerCand=qt.QSpinBox(); self.ransacItersPerCand.minimum=10000; self.ransacItersPerCand.maximum=2000000; self.ransacItersPerCand.singleStep=10000; self.ransacItersPerCand.value=300000; optL.addRow("RANSAC iters (per candidate):", self.ransacItersPerCand)
     self.optimizeButton=qt.QPushButton("Optimize"); optL.addRow(self.optimizeButton)
+
+    # --- Optimization Tab (append this) ---
+    self.diagText = qt.QPlainTextEdit()
+    self.diagText.setReadOnly(True)
+    self.diagText.setPlaceholderText("Template optimization diagnostics will appear here…")
+    optL.addRow(self.diagText)
+
+    def _log_opt(msg):
+        if hasattr(self, "diagText"):
+            self.diagText.appendPlainText(str(msg))
+        slicer.util.showStatusMessage(str(msg), 3000)
+    self._log_opt = _log_opt  # keep a handle
+
 
     # --- Advanced Settings (declarative) ---
     self._build_advanced_tab(advancedSettingsTabLayout)
@@ -267,9 +324,12 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.layout.addStretch(1)
 
   # ----- Small helpers -----
-  def updateLayout(self):
-    lm=slicer.app.layoutManager(); lm.setLayout(9)
-    lm.threeDWidget(0).threeDView().resetFocalPoint(); lm.threeDWidget(0).threeDView().resetCamera()
+  def updateLayout(self, focusNode=None, keepOrientation=True, margin=1.15):
+      lm = slicer.app.layoutManager()
+      if lm.layout != 9:
+          lm.setLayout(9)
+      if focusNode is not None:
+          self._focusOnNode(focusNode, keepOrientation=keepOrientation, margin=margin)
 
   def _enable_single(self):
     ready = all([self.sourceModelSelector.currentNode(), self.targetModelSelector.currentNode(),
@@ -347,6 +407,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
   def onCancelBatch(self):
     self._cancelBatch = True; self.batchCancelButton.enabled = False
     slicer.util.showStatusMessage("Cancelling batch…", 2000)
+  
 
   def onSelectMultiProcess(self): self._enable_batch()
 
@@ -376,20 +437,22 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
       slicer.util.errorDisplay("Subsampling failed. Check input files and logs."); return
     src_np = np.asarray(self.sourcePoints.points); tgt_np = np.asarray(self.targetPoints.points)
     self.sourceSLM_vtk = logic.convertPointsToVTK(src_np); self.targetSLM_vtk = logic.convertPointsToVTK(tgt_np)
-    self.targetCloudNode = logic.displayPointCloud(self.targetSLM_vtk, self.voxelSize/10, 'Target Pointcloud', COLORS["blue"])
+    self.targetCloudNode = logic.displayPointCloud(self.targetSLM_vtk, 'Target Pointcloud', COLORS["blue"], frac=0.004, refNode=self.tgtTemp)
     self._parentNode(self.targetCloudNode); self.updateLayout(); self.alignButton.enabled = True
     self.subsampleInfo.clear(); self.subsampleInfo.insertPlainText(f':: Your subsampled source pointcloud has {len(src_np)} points.\n')
     self.subsampleInfo.insertPlainText(f':: Your subsampled target pointcloud has {len(tgt_np)} points.')
+    self.updateLayout(focusNode=self.tgtTemp)  
+
 
   def onAlignButton(self):
     logic = PREDICTLogic()
     self.transformMatrix = logic.estimateTransform(self.sourcePoints, self.targetPoints, self.sourceFeatures, self.targetFeatures, self.voxelSize, self.parameterDictionary)
     self.ICPTransformNode = logic.convertMatrixToTransformNode(self.transformMatrix, 'Rigid Transformation Matrix')
     self._parentNode(self.ICPTransformNode)
-    self.alignedSourceSLM_vtk = logic.applyTransform(self.ICPTransformNode, self.sourceSLM_vtk)
-    self.sourceCloudNode = logic.displayPointCloud(self.sourceSLM_vtk, self.voxelSize/10, 'Source Pointcloud', COLORS["red"])
+    self.sourceCloudNode = logic.displayPointCloud(self.sourceSLM_vtk, 'Source Pointcloud', COLORS["red"],  frac=0.004, refNode=self.tgtTemp)
     self.sourceCloudNode.SetAndObserveTransformNodeID(self.ICPTransformNode.GetID()); slicer.vtkSlicerTransformLogic().hardenTransform(self.sourceCloudNode)
-    self._parentNode(self.sourceCloudNode); self.updateLayout(); self.displayMeshButton.enabled = True; self.alignButton.enabled = False
+    self._parentNode(self.sourceCloudNode); self.displayMeshButton.enabled = True; self.alignButton.enabled = False
+
 
   def onDisplayMeshButton(self):
     self.tgtTemp.CreateDefaultDisplayNodes(); self.tgtTemp.GetDisplayNode().SetColor(*COLORS["blue"]); self.tgtTemp.GetDisplayNode().SetVisibility(True)
@@ -398,29 +461,97 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.sourceCloudNode.GetDisplayNode().SetVisibility(False); self.targetCloudNode.GetDisplayNode().SetVisibility(False)
     self.corresTemp.SetAndObserveTransformNodeID(self.ICPTransformNode.GetID()); slicer.vtkSlicerTransformLogic().hardenTransform(self.corresTemp); self.corresTemp.GetDisplayNode().SetVisibility(False)
     self.lmTemp.SetAndObserveTransformNodeID(self.ICPTransformNode.GetID()); slicer.vtkSlicerTransformLogic().hardenTransform(self.lmTemp); self.lmTemp.GetDisplayNode().SetVisibility(True)
-    self.updateLayout(); self.CPDRegistrationButton.enabled = True; self.displayMeshButton.enabled = False
+    self.CPDRegistrationButton.enabled = True; self.displayMeshButton.enabled = False
+
 
   def onCPDRegistration(self):
-    logic = PREDICTLogic()
-    alignedSourceCorres_np = slicer.util.arrayFromMarkupsControlPoints(self.corresTemp)
-    alignedSourceLM_np = slicer.util.arrayFromMarkupsControlPoints(self.lmTemp)
-    tableNode = self.ssmTableSelector.currentNode(); logic.rigidTransformNode = self.ICPTransformNode
-    deformedLandmark_np = logic.runDeformable(tableNode, alignedSourceCorres_np, self.scale, self.targetPoints.points, self.parameterDictionary)
-    # preview the deformed correspondences as a point cloud
-    if getattr(self, "deformedCloudNode", None):
-        try: slicer.mrmlScene.RemoveNode(self.deformedCloudNode)
-        except: pass
-    pc_vtk = logic.convertPointsToVTK(deformedLandmark_np)
-    self.deformedCloudNode = logic.displayPointCloud(pc_vtk, self.voxelSize/10, "Warped Source Pointcloud", COLORS["green"]); self.deformedCloudNode.GetDisplayNode().SetVisibility(False)
-    self._parentNode(self.deformedCloudNode)
-    tree = cKDTree(alignedSourceCorres_np); disp = deformedLandmark_np - alignedSourceCorres_np
-    self.warpedMeshNode = self.cloneNode(self.srcTemp, customName="Warped Source"); logic.warp_node(node_to_warp=self.warpedMeshNode, tree=tree, disp=disp)
-    logic.smoothModel(self.warpedMeshNode)
-    self.warpedLM = self.cloneNode(self.lmTemp, customName="Landmark Predictions"); logic.warp_node(node_to_warp=self.warpedLM, tree=tree, disp=disp)
-    self.refinedLM = logic.runPointProjection(self.warpedMeshNode, self.tgtTemp, self.warpedLM, self._proj_frac()); self._parentNode(self.refinedLM)
-    self.warpedMeshNode.GetDisplayNode().SetColor(*COLORS["green"]); self.warpedMeshNode.GetDisplayNode().SetVisibility(False)
-    self.lmTemp.GetDisplayNode().SetVisibility(False); self.srcTemp.GetDisplayNode().SetVisibility(False); self.warpedLM.GetDisplayNode().SetVisibility(False); self.refinedLM.GetDisplayNode().SetVisibility(True)
-    self.displayWarpedModelButton.enabled = True; self.CPDRegistrationButton.enabled = False
+      logic = PREDICTLogic()
+
+      alignedSourceCorres_np = slicer.util.arrayFromMarkupsControlPoints(self.corresTemp)
+      alignedSourceLM_np     = slicer.util.arrayFromMarkupsControlPoints(self.lmTemp)
+
+      tableNode = self.ssmTableSelector.currentNode()
+      logic.rigidTransformNode = self.ICPTransformNode
+
+      # SSM-guided deformable (PCA-CPD)
+      deformedLandmark_np = logic.runDeformable(
+          tableNode=tableNode,
+          sourceLM=alignedSourceCorres_np,
+          scale=self.scale,
+          targetSLM=self.targetPoints.points,
+          parameters=self.parameterDictionary
+      )
+
+      # Preview warped correspondences
+      if getattr(self, "deformedCloudNode", None):
+          try: slicer.mrmlScene.RemoveNode(self.deformedCloudNode)
+          except: pass
+      pc_vtk = logic.convertPointsToVTK(deformedLandmark_np)
+      self.deformedCloudNode = logic.displayPointCloud(pc_vtk, "Warped Source Pointcloud", COLORS["green"], frac=0.004, refNode=self.tgtTemp)
+
+      self.deformedCloudNode.GetDisplayNode().SetVisibility(False)
+      self._parentNode(self.deformedCloudNode)
+
+      # Choose deformation backend
+      use_bih = bool(self.parameterDictionary.get("useBiharmonic", False))
+
+      self.warpedMeshNode = self.cloneNode(self.srcTemp, customName="Warped Source")
+      self.warpedLM       = self.cloneNode(self.lmTemp,  customName="Landmark Predictions")
+
+      if use_bih:
+          # Experimental surface biharmonic + barycentric LM transfer
+          lam = float(self.parameterDictionary.get("bih_lam", 1e4))
+          V0, V1, F = logic.warp_model_biharmonic(
+              modelNode=self.warpedMeshNode,
+              src_corr=alignedSourceCorres_np,
+              dst_corr=deformedLandmark_np,
+              lam=lam
+          )
+          logic.warp_markups_barycentric(self.warpedLM, V0, V1, F)
+      else:
+          # Default: stable TPS warp (optionally smoothed, constraint-capped)
+          lam_tps  = float(self.parameterDictionary.get("tpsLambda", 0.0))
+          max_corr = int(self.parameterDictionary.get("tpsMaxCorr", 800))
+          logic.warp_model_tps(
+              modelNode=self.warpedMeshNode,
+              src_corr=alignedSourceCorres_np,
+              dst_corr=deformedLandmark_np,
+              lam=lam_tps,
+              max_corr=max_corr,
+              seed=0,
+              landmarksNode=self.warpedLM
+          )
+
+      # Optional smoothing for visual niceness
+      logic.smoothModel(self.warpedMeshNode)
+
+      # Respect Skip projection
+      proj = self._proj_frac()
+      if proj > 0.0:
+          self.refinedLM = logic.runPointProjection(
+              template=self.warpedMeshNode, model=self.tgtTemp,
+              templateLandmarks=self.warpedLM, maxProjectionFactor=proj
+          )
+          self._parentNode(self.refinedLM)
+          self.warpedLM.GetDisplayNode().SetVisibility(False)
+          self.refinedLM.GetDisplayNode().SetVisibility(True)
+      else:
+          self.refinedLM = self.warpedLM
+          try:
+              self.refinedLM.SetName("Predicted Landmarks (no projection)")
+              self.refinedLM.SetLocked(True)
+              self.refinedLM.SetFixedNumberOfControlPoints(True)
+          except: pass
+          self._parentNode(self.refinedLM)
+          self.refinedLM.GetDisplayNode().SetVisibility(True)
+
+      self.warpedMeshNode.GetDisplayNode().SetColor(*COLORS["green"])
+      self.warpedMeshNode.GetDisplayNode().SetVisibility(False)
+      self.lmTemp.GetDisplayNode().SetVisibility(False)
+      self.srcTemp.GetDisplayNode().SetVisibility(False)
+
+      self.displayWarpedModelButton.enabled = True
+      self.CPDRegistrationButton.enabled = False
 
   def onDisplayWarpedModel(self):
     self.warpedMeshNode.GetDisplayNode().SetColor(*COLORS["green"]); self.warpedMeshNode.GetDisplayNode().SetVisibility(True)
@@ -429,6 +560,8 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.clearCloneFolder(); self._showInputNodes(True)
     for btn in (self.subsampleButton, self.alignButton, self.displayMeshButton, self.CPDRegistrationButton, self.displayWarpedModelButton, self.applyLandmarkMultiButton): btn.enabled=False
     self.onSelect(); slicer.util.showStatusMessage("Reset complete: cleared previous runs", 2000)
+    if hasattr(self, 'diagText'):
+      self.diagText.setPlainText("No diagnostics yet.")
 
   # ----- Batch processing -----
   def onApplyLandmarkMulti(self):
@@ -442,6 +575,9 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     def cancel_cb(): return self._cancelBatch
     qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
     try:
+      self.parameterDictionary["opt_pcGridSteps"] = int(self.pcGridSteps.value)
+      self.parameterDictionary["opt_ransac_per_cand"] = int(self.ransacItersPerCand.value)
+
       logic.runLandmarkBatch(
         sourceModelNode=self.sourceModelMultiSelector.currentNode(),
         sourceCorrNode=self.sourceFiducialMultiSelector.currentNode(),
@@ -465,36 +601,76 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
   # ----- Optimization -----
   def onOptimize(self):
-    logic = PREDICTLogic()
-    tplModelOrig = self.d2sourceModelSelector.currentNode(); tplCorrOrig  = self.d2sourceFiducialSelector.currentNode()
-    tplLandOrig  = self.d2sourceSparseFiducialSelector.currentNode(); targetNode   = self.d2targetModelSelector.currentNode(); tableNode = self.d2ssmTableSelector.currentNode()
-    if not all([tplModelOrig, tplCorrOrig, targetNode, tableNode]): slicer.util.errorDisplay("Select template model/correspondences, target, and SSM table."); return
-    label = f"{tplModelOrig.GetName()}→{targetNode.GetName()}"; self.clearCloneFolder(); self.ensureCloneFolder(label=label)
-    tplModel = self.cloneNode(tplModelOrig, "GridRANSAC_TemplateModel"); tplCorr = self.cloneNode(tplCorrOrig,  "GridRANSAC_TemplateCorrespondences")
-    tplLand  = self.cloneNode(tplLandOrig,  "GridRANSAC_TemplateLandmarks") if tplLandOrig else None
-    qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
-    try:
-      b, T = logic.initialize_template(
-        tableNode, tplModel, tplCorr, tplLand, targetNode,
-        parameters=self.parameterDictionary, k=3, span=3.0, optimizer="powell",
-        max_evals=120, eval_ransac_iters=int(self.ransacItersPerCand.value * 0.2), final_ransac_iters=int(self.ransacItersPerCand.value), seed=0
-      )
-    except Exception as e:
-      slicer.util.errorDisplay(f"Template optimization failed:\n{e}"); return
-    finally:
-      qt.QApplication.restoreOverrideCursor()
-    txNode = make_transform_node(T, 'SSM gridRANSAC rigid')
-    for n in [tplModel, tplCorr] + ([tplLand] if tplLand else []): n.SetAndObserveTransformNodeID(txNode.GetID()); slicer.vtkSlicerTransformLogic().hardenTransform(n)
-    logic.rigidTransformNode = txNode
-    self._parentNode(txNode); self._parentNode(tplModel); self._parentNode(tplCorr); 
-    if tplLand: self._parentNode(tplLand)
-    sh = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLSubjectHierarchyNode")
-    resRoot = sh.GetItemByName("Template optimization") or sh.CreateFolderItem(sh.GetSceneItemID(), "Template optimization")
-    for n in [tplModel, tplCorr] + ([tplLand] if tplLand else []): sh.SetItemParent(sh.GetItemByDataNode(n), resRoot)
-    self.cloneFolderItemID = None
-    self.sourceModelSelector.setCurrentNode(tplModel); self.sourceFiducialSelector.setCurrentNode(tplCorr)
-    if tplLand: self.sourceSparseFiducialSelector.setCurrentNode(tplLand)
-    slicer.util.showStatusMessage(f"Template optimized by SSM grid + RANSAC. ||b||={np.linalg.norm(b):.3f}", 4000)
+      logic = PREDICTLogic()
+      tplModelOrig = self.d2sourceModelSelector.currentNode()
+      tplCorrOrig  = self.d2sourceFiducialSelector.currentNode()
+      tplLandOrig  = self.d2sourceSparseFiducialSelector.currentNode()
+      targetNode   = self.d2targetModelSelector.currentNode()
+      tableNode    = self.d2ssmTableSelector.currentNode()
+      if not all([tplModelOrig, tplCorrOrig, targetNode, tableNode]):
+          slicer.util.errorDisplay("Select template model/correspondences, target, and SSM table.")
+          return
+
+      label = f"{tplModelOrig.GetName()}→{targetNode.GetName()}"
+      self.clearCloneFolder()
+      self.ensureCloneFolder(label=label)
+
+      # clones (we will not harden any rigid onto these)
+      tplModel = self.cloneNode(tplModelOrig, "GridRANSAC_TemplateModel")
+      tplCorr  = self.cloneNode(tplCorrOrig,  "GridRANSAC_TemplateCorrespondences")
+      tplLand  = self.cloneNode(tplLandOrig,  "GridRANSAC_TemplateLandmarks") if tplLandOrig else None
+
+      qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
+      try:
+          k = int(self.pcGridSteps.value)
+          b, _ = logic.initialize_template(
+              tableNode, tplModel, tplCorr, tplLand, targetNode,
+              parameters=self.parameterDictionary,
+              k=k, span=3.0, optimizer="powell",
+              max_evals=240,
+              eval_ransac_iters=int(self.ransacItersPerCand.value * 0.2),
+              final_ransac_iters=int(self.ransacItersPerCand.value),
+              seed=0
+          )
+      except Exception as e:
+          slicer.util.errorDisplay(f"Template optimization failed:\n{e}")
+          return
+      finally:
+          qt.QApplication.restoreOverrideCursor()
+
+  
+      self._parentNode(tplModel)
+      self._parentNode(tplCorr)
+      if tplLand: self._parentNode(tplLand)
+
+      # Park results under a folder
+      sh = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLSubjectHierarchyNode")
+      resRoot = sh.GetItemByName("Template optimization") or sh.CreateFolderItem(sh.GetSceneItemID(), "Template optimization")
+      for n in [tplModel, tplCorr] + ([tplLand] if tplLand else []):
+          sh.SetItemParent(sh.GetItemByDataNode(n), resRoot)
+
+      # Keep template geometry in place: do NOT SetAndObserveTransformNodeID(..), do NOT harden
+      # Report what happened
+      info = getattr(logic, "last_opt_info", {}) or {}
+      dec  = info.get("decision", "unknown")
+      fit  = info.get("fit", None)
+      rmse = info.get("rmse", None)
+      nb   = info.get("norm_b", None)
+
+      if dec == "baseline_good":
+          self._log_opt(f"[opt] Baseline template was already good (fit={fit:.3f}, rmse_n={rmse:.3f}).")
+      elif dec == "candidate_chosen":
+          self._log_opt(f"[opt] New template chosen from SSM (||b||={nb:.3f}, fit={fit:.3f}, rmse_n={rmse:.3f}).")
+      elif dec == "baseline_kept":
+          self._log_opt(f"[opt] Baseline kept after search (fit={fit:.3f}, rmse_n={rmse:.3f}).")
+      else:
+          self._log_opt("[opt] Optimization finished (details unavailable).")
+
+      # Hand the optimized/kept template to the Single Alignment tab for the rest of the pipeline
+      self.sourceModelSelector.setCurrentNode(tplModel)
+      self.sourceFiducialSelector.setCurrentNode(tplCorr)
+      if tplLand: self.sourceSparseFiducialSelector.setCurrentNode(tplLand)
+
 
 # ---------- Logic ----------
 class PREDICTLogic(ScriptedLoadableModuleLogic):
@@ -502,6 +678,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
 
   def runLandmarkBatch(self, sourceModelNode, sourceCorrNode, sourceLMNode, targetModelDir, outputDir, skipScaling, projectionFactor, parameters, tableNode, progress_callback=None, status_callback=None, cancel_callback=None):
     import tiny3d as t3d
+    t3d.utility.random.seed(int(42))
     skipOpt = bool(parameters.get("skipOptimization", False))
 
     if tableNode is None: raise ValueError("Batch requires an SSM table.")
@@ -558,7 +735,9 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   tpl_lm_orig)
           if not skipOpt:
             if status_callback: status_callback(f"[{i+1}/{total}] Optimize (SSM+RANSAC)…")
-            _b,_T=self.initialize_template(tableNode, tpl_model, tpl_corr, tpl_lm, tgt_node, parameters=parameters, k=3, span=3.0, optimizer="powell", max_evals=120, eval_ransac_iters=30000, final_ransac_iters=150000, seed=0)
+            k = int(parameters.get("opt_pcGridSteps", 4))
+            rper = int(parameters.get("opt_ransac_per_cand", 300000))
+            _b,_T=self.initialize_template(tableNode, tpl_model, tpl_corr, tpl_lm, tgt_node, parameters=parameters, k=k, span=3.0, optimizer="powell", max_evals=240, eval_ransac_iters=int(0.2 * rper), final_ransac_iters=rper, seed=0)
           else:
             if status_callback: status_callback(f"[{i+1}/{total}] Skip optimization")
           b_src=np.array(tpl_model.GetPolyData().GetBounds()).reshape(3,2); b_tgt=np.array(tgt_node.GetPolyData().GetBounds()).reshape(3,2)
@@ -587,9 +766,28 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           aligned_corr=corr_np
           deformed_corr=self.runDeformable(tableNode=tableNode, sourceLM=aligned_corr, scale=s, targetSLM=np.asarray(tgt_down.points), parameters=parameters)
           if cancel_callback and cancel_callback(): raise KeyboardInterrupt("Cancel requested")
-          tree=cKDTree(aligned_corr); disp=(deformed_corr - aligned_corr).astype(np.float32,copy=False)
-          self.warp_node(node_to_warp=tpl_model, tree=tree, disp=disp)
-          self.warp_node(node_to_warp=tpl_lm,    tree=tree, disp=disp)
+          use_bih = bool(parameters.get("useBiharmonic", False))
+          if use_bih:
+              try:
+                  lam_bih = float(parameters.get("bih_lam", 1e4))
+                  V0, V1, F = self.warp_model_biharmonic(
+                      modelNode=tpl_model,
+                      src_corr=aligned_corr,
+                      dst_corr=deformed_corr,
+                      lam=lam_bih
+                  )
+                  if tpl_lm is not None:
+                      self.warp_markups_barycentric(tpl_lm, V0, V1, F)
+              except Exception as e:
+                  logging.warning(f"[batch] Biharmonic failed; falling back to TPS. Reason: {e}")
+                  lam_tps  = float(parameters.get("tpsLambda", 0.0))
+                  max_corr = int(parameters.get("tpsMaxCorr", 800))
+                  self.warp_model_tps(tpl_model, aligned_corr, deformed_corr, lam=lam_tps, max_corr=max_corr, seed=0, landmarksNode=tpl_lm)
+          else:
+              lam_tps  = float(parameters.get("tpsLambda", 0.0))
+              max_corr = int(parameters.get("tpsMaxCorr", 800))
+              self.warp_model_tps(tpl_model, aligned_corr, deformed_corr, lam=lam_tps, max_corr=max_corr, seed=0, landmarksNode=tpl_lm)
+
           if projectionFactor and projectionFactor>0:
             if status_callback: status_callback(f"[{i+1}/{total}] Project to surface…")
             pred_node=self.runPointProjection(tpl_model, tgt_node, tpl_lm, projectionFactor)
@@ -678,24 +876,31 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
 
   def runDeformable(self, tableNode, sourceLM, scale, targetSLM, parameters):
       from biocpd.atlas_registration import AtlasRegistration
+      from biocpd.deformable_registration import DeformableRegistration
       if tableNode is None: raise ValueError("runDeformable requires tableNode to be set")
 
       # Keep SSM geometry consistent with the (already scaled) sourceLM
-      flat = self._tableToArray(tableNode) * float(scale)
+      flat = self._tableToArray(tableNode) #* float(scale)
       M = flat.shape[0] // 3
       if M != sourceLM.shape[0]:
           raise ValueError(f"SSM table has {M} points but sourceLM has {sourceLM.shape[0]}")
-
+      
       modes = flat[:, 1:].reshape(M, 3, -1)
 
-      # Eigenvalues: unscaled; drop numerically tiny modes (avoids jitter)
       eig = np.array(json.loads(tableNode.GetAttribute("ssm_eigenvalues")), float)
-      rel = eig / (eig.max() + 1e-12)
-      keep = (eig > 0) & (rel > 1e-8)
-      if not np.all(keep):
-          modes = modes[:, :, keep]
-          eig = eig[keep]
-      eigvals_eff = eig
+
+      variance_keep = float(parameters.get("variance_keep", 0.95))
+      total = eig.sum()
+      if total <= 0:
+          k = eig.size
+      else:
+          cum = np.cumsum(eig)
+          k = int(np.searchsorted(cum, variance_keep * total) + 1)
+          if k > eig.size: k = eig.size
+
+      # keep the first k modes/eigenvalues, preserving original order
+      modes = modes[:, :, :k]
+      eigvals_eff = eig[:k]#* (scale ** 2)  
 
       # Rigid rotation for the modes
       if self.rigidTransformNode is None:
@@ -705,21 +910,305 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
 
       U_aligned = np.einsum('ij,pjk->pik', R, modes).reshape(3*M, -1)
 
+      def _diag(P): 
+        if P.size==0: return 1.0
+        bmin,bmax = P.min(0), P.max(0); return float(np.linalg.norm(bmax-bmin))
+      
+      d_tgt = _diag(np.asarray(targetSLM)); s20 = 20.0/max(d_tgt,1e-12)
+      src_n = np.asarray(sourceLM)*s20; tgt_n = np.asarray(targetSLM)*s20
+
       pca = AtlasRegistration(
-          X=np.asarray(targetSLM),
-          Y=np.asarray(sourceLM),            # mean_shape=None ⇒ Y is the base
+          X=np.asarray(tgt_n),          # scaled target
+          Y=np.asarray(src_n),            # mean_shape=None ⇒ Y is the base
           mean_shape=None,
           U=U_aligned,
           eigenvalues=eigvals_eff,          # no external scaling/flooring
           lambda_reg=float(parameters.get("lambda_reg", 0.2)),  # no scale² here
           alpha=float(parameters.get("alpha", 2.0)),
-          w=float(parameters.get("w", 0.1)),
+          w=float(parameters.get("w", 0.2)),
           tolerance=float(parameters.get("tolerance", 1e-6)),
           max_iterations=int(parameters.get("max_iterations", 120)),
           normalize=True                    # << key change
       )
       warped_landmarks, _ = pca.register()
-      return warped_landmarks
+      
+      if bool(parameters.get("skipFineCPD", False)):
+        return warped_landmarks / s20
+
+      final = DeformableRegistration(
+          X=np.asarray(tgt_n),
+          Y=warped_landmarks,
+          beta=float(parameters.get("beta", 2.0)),
+          alpha=float(parameters.get("alpha", 2.0)),
+          tolerance=float(parameters.get("tolerance", 1e-6)),
+          max_iterations=int(parameters.get("max_iterations", 120)),
+      )
+      warped_landmarks, _ = final.register()
+      return warped_landmarks/s20
+  
+  def _triangulate_polydata(self, pd):
+    tf = vtk.vtkTriangleFilter()
+    tf.SetInputData(pd)
+    tf.PassLinesOff(); tf.PassVertsOff()
+    tf.Update()
+    return tf.GetOutput()
+
+  def _cotangent_laplacian(self, V, F):
+      from scipy.sparse import coo_matrix, diags
+      n = V.shape[0]
+      I, J, W = [], [], []
+      A = np.zeros(n, dtype=np.float64)  # lumped mass (per-vertex area)
+
+      for t in F:
+          i, j, k = int(t[0]), int(t[1]), int(t[2])
+          vi, vj, vk = V[i], V[j], V[k]
+          e0 = vj - vk; e1 = vk - vi; e2 = vi - vj
+          nrm = np.linalg.norm(np.cross(e0, -e2))
+          if nrm <= 1e-16:
+              continue
+          # cotangents at opposite corners
+          c0 = -np.dot(e0, e2) / nrm   # at i, opposite edge jk
+          c1 = -np.dot(e1, e0) / nrm   # at j, opposite edge ki
+          c2 = -np.dot(e2, e1) / nrm   # at k, opposite edge ij
+          Atri = 0.5 * nrm
+          A[i] += Atri / 3.0; A[j] += Atri / 3.0; A[k] += Atri / 3.0
+
+          for (a, b, cot) in ((j, k, c0), (k, i, c1), (i, j, c2)):
+              I.append(a); J.append(b); W.append(0.5 * cot)
+              I.append(b); J.append(a); W.append(0.5 * cot)
+
+      Lij = coo_matrix((W, (I, J)), shape=(n, n)).tocsr()
+      d = -np.array(Lij.sum(axis=1)).ravel()
+      L = Lij.copy(); L.setdiag(d)
+      from scipy.sparse import diags
+      M = diags(np.maximum(A, 1e-12))
+      return L, M
+  
+  def warp_model_biharmonic(self, modelNode, src_corr, dst_corr, lam=1e4):
+      """
+      Solve (L^T M^{-1} L + lam*W) X = lam*W*target  for X (per coordinate),
+      where W has 1's at constrained (nearest) vertices to src_corr.
+      """
+      from scipy.spatial import cKDTree
+      from scipy.sparse import diags
+      from scipy.sparse.linalg import splu
+      import vtk.util.numpy_support as vtk_np
+
+
+      # Triangulate and extract (V, F)
+      tri = self._triangulate_polydata(modelNode.GetPolyData())
+      V0 = vtk_np.vtk_to_numpy(tri.GetPoints().GetData()).astype(np.float64, copy=False)
+      ca = vtk_np.vtk_to_numpy(tri.GetPolys().GetData())
+      F = ca.reshape(-1, 4)[:, 1:4].astype(np.int64, copy=False)
+
+
+      # Biharmonic operator
+      L, M = self._cotangent_laplacian(V0, F)
+      from scipy.sparse import diags
+      Minv = diags(1.0 / np.maximum(M.diagonal(), 1e-12))
+      A0 = (L.T @ Minv @ L).tocsr()
+
+      # Map correspondences to nearest vertices (deduplicate)
+      tree = cKDTree(V0)
+      idx_raw = tree.query(np.asarray(src_corr, np.float64), k=1)[1]
+      idx_unique, inv = np.unique(idx_raw, return_inverse=True)
+
+      # Average multiple constraints that hit the same vertex
+      target = np.zeros((idx_unique.size, 3), np.float64)
+      np.add.at(target, inv, np.asarray(dst_corr, np.float64))
+      counts = np.bincount(inv, minlength=idx_unique.size).astype(np.float64)
+      target /= counts[:, None]
+
+      # Assemble W and RHS
+      n = V0.shape[0]
+      Wd = np.zeros(n, dtype=np.float64); Wd[idx_unique] = 1.0
+      A = (A0 + lam * diags(Wd)).tocsc()
+      lu = splu(A)
+
+      B = np.zeros((n, 3), np.float64)
+      B[idx_unique, :] = target
+      B *= lam
+
+      # Solve for X (per coordinate)
+      V1 = np.empty_like(V0)
+      V1[:, 0] = lu.solve(B[:, 0])
+      V1[:, 1] = lu.solve(B[:, 1])
+      V1[:, 2] = lu.solve(B[:, 2])
+
+      # Write back
+      pts = modelNode.GetPolyData().GetPoints()
+      pts.SetData(vtk_np.numpy_to_vtk(V1.astype(np.float32, copy=False), deep=1))
+      pts.Modified(); modelNode.GetPolyData().Modified()
+
+      return V0, V1, F  # handy if you want barycentric landmark warping
+  
+  def warp_markups_barycentric(self, markupsNode, V0, V1, F):
+    """Project each point to the nearest triangle on (V0,F), get barycentric
+    coords there, then carry to (V1,F)."""
+    import vtk.util.numpy_support as vtk_np
+
+    # Build a vtk polydata/locator for the pre-warp surface
+    pd = vtk.vtkPolyData()
+    pts = vtk.vtkPoints(); pts.SetData(vtk_np.numpy_to_vtk(V0, deep=1))
+    polys = vtk.vtkCellArray()
+    for a, b, c in F:
+        polys.InsertNextCell(3)
+        polys.InsertCellPoint(int(a)); polys.InsertCellPoint(int(b)); polys.InsertCellPoint(int(c))
+    pd.SetPoints(pts); pd.SetPolys(polys)
+    locator = vtk.vtkStaticCellLocator(); locator.SetDataSet(pd); locator.BuildLocator()
+
+    def barycentric(p, A, B, C):
+        v0 = B - A; v1 = C - A; v2 = p - A
+        d00 = v0.dot(v0); d01 = v0.dot(v1); d11 = v1.dot(v1)
+        d20 = v2.dot(v0); d21 = v2.dot(v1)
+        denom = d00 * d11 - d01 * d01
+        if denom <= 1e-12: return 1.0, 0.0, 0.0
+        v = (d11 * d20 - d01 * d21) / denom
+        w = (d00 * d21 - d01 * d20) / denom
+        u = 1.0 - v - w
+        return u, v, w
+
+    P = slicer.util.arrayFromMarkupsControlPoints(markupsNode).astype(np.float64, copy=False)
+    Pnew = np.empty_like(P)
+
+    cid = vtk.reference(0); sid = vtk.reference(0); d2 = vtk.reference(0.0)
+    for i, p in enumerate(P):
+        cp = [0.0, 0.0, 0.0]
+        locator.FindClosestPoint(p.tolist(), cp, cid, sid, d2)
+        t = int(cid)
+        a, b, c = F[t]
+        u, v, w = barycentric(np.asarray(cp), V0[a], V0[b], V0[c])
+        Pnew[i] = u * V1[a] + v * V1[b] + w * V1[c]
+
+    with slicer.util.NodeModify(markupsNode):
+        slicer.util.updateMarkupsControlPointsFromArray(markupsNode, Pnew.astype(np.float32, copy=False))
+
+  # ---------- Stable TPS/RBF backend ----------
+  def _tps_kernel_3d(self, r):
+      # Classic 3D TPS radial kernel U(r) = r
+      return r
+
+  def _fps_indices(self, P, m, seed=0):
+      """Farthest point sampling indices on P (N,3)."""
+      P = np.asarray(P, float)
+      n = P.shape[0]
+      if m >= n: return np.arange(n, dtype=int)
+      rng = np.random.default_rng(int(seed) & 0x7fffffff)
+      # start farthest from mean
+      start = int(np.argmax(np.linalg.norm(P - P.mean(0, keepdims=True), axis=1)))
+      sel = [start]
+      d = np.linalg.norm(P - P[start], axis=1)
+      for _ in range(1, m):
+          i = int(np.argmax(d))
+          sel.append(i)
+          d = np.minimum(d, np.linalg.norm(P - P[i], axis=1))
+      return np.array(sel, dtype=int)
+
+  def _tps_fit_3d(self, src, dst, lam=0.0, max_corr=None, seed=0):
+      """
+      Fit 3D TPS mapping f(x) = K(x,src) @ W + [1 x] @ A,
+      solving block system [[K+λI, P],[P^T, 0]] [W; A] = [dst; 0].
+      Returns (src_used, W (n×3), A (4×3)).
+      """
+      src = np.asarray(src, np.float64)
+      dst = np.asarray(dst, np.float64)
+      if src.shape != dst.shape or src.shape[1] != 3:
+          raise ValueError("TPS fit expects src/dst with shape (N,3)")
+
+      n = src.shape[0]
+      if n < 4:
+          # Fallback: affine fit
+          A = self._fit_affine(src, dst)  # (4×3)
+          return src, np.zeros((n,3), dtype=np.float64), A
+
+      # Reduce constraints if needed
+      if max_corr is not None and n > int(max_corr):
+          idx = self._fps_indices(src, int(max_corr), seed=seed)
+          src = src[idx]
+          dst = dst[idx]
+          n = src.shape[0]
+
+      # Build K (n×n)
+      # pairwise distances
+      diff = src[:, None, :] - src[None, :, :]
+      K = self._tps_kernel_3d(np.linalg.norm(diff, axis=2))
+      if lam > 0:
+          K = K + lam * np.eye(n, dtype=np.float64)
+
+      # P: (n×4) with [1, x, y, z]
+      P = np.hstack([np.ones((n,1), np.float64), src])
+
+      # Assemble L and RHS
+      L = np.zeros((n+4, n+4), dtype=np.float64)
+      L[:n, :n] = K
+      L[:n, n:] = P
+      L[n:, :n] = P.T
+      Y = np.zeros((n+4, 3), dtype=np.float64)
+      Y[:n, :] = dst
+
+      # Solve for [W; A]
+      try:
+          sol = np.linalg.solve(L, Y)
+      except np.linalg.LinAlgError:
+          # regularize more and retry
+          L[:n, :n] += (1e-8 + lam) * np.eye(n, dtype=np.float64)
+          sol = np.linalg.lstsq(L, Y, rcond=None)[0]
+
+      W = sol[:n, :]   # (n×3)
+      A = sol[n:, :]   # (4×3)
+      return src, W, A
+
+  def _tps_eval_3d(self, X, src, W, A, chunk=50000):
+      """Apply fitted TPS to points X (M×3)."""
+      X = np.asarray(X, np.float64)
+      M = X.shape[0]
+      out = np.empty((M, 3), dtype=np.float64)
+      for s in range(0, M, chunk):
+          e = min(M, s + chunk)
+          Xi = X[s:e]
+          # K(Xi, src): (m×n)
+          diff = Xi[:, None, :] - src[None, :, :]
+          K = self._tps_kernel_3d(np.linalg.norm(diff, axis=2))
+          Pi = np.hstack([np.ones((Xi.shape[0], 1), np.float64), Xi])
+          out[s:e] = K @ W + Pi @ A
+      return out
+
+  def _fit_affine(self, P, Q):
+      """Return 4×3 affine that maps P→Q in least squares: [P 1] A = Q."""
+      P = np.asarray(P, np.float64); Q = np.asarray(Q, np.float64)
+      X = np.hstack([P, np.ones((P.shape[0],1), np.float64)])  # (N×4)
+      A, _, _, _ = np.linalg.lstsq(X, Q, rcond=None)           # (4×3)
+      return A
+
+  def _apply_affine(self, X, A):
+      X = np.asarray(X, np.float64)
+      return np.hstack([X, np.ones((X.shape[0],1), np.float64)]) @ A  # (N×3)
+
+  def warp_model_tps(self, modelNode, src_corr, dst_corr, lam=0.0, max_corr=800, seed=0, landmarksNode=None):
+      """
+      Stable default warp: thin-plate spline in 3D with optional smoothing (lam)
+      and constraint cap (max_corr). Returns (V0, V1).
+      """
+      # Fit
+      src_used, W, A = self._tps_fit_3d(src_corr, dst_corr, lam=lam, max_corr=max_corr, seed=seed)
+
+      # Model vertices
+      V0 = vtk_np.vtk_to_numpy(modelNode.GetPolyData().GetPoints().GetData()).astype(np.float64, copy=False)
+      V1 = self._tps_eval_3d(V0, src_used, W, A)
+
+      # Write back
+      pts = modelNode.GetPolyData().GetPoints()
+      pts.SetData(vtk_np.numpy_to_vtk(V1.astype(np.float32, copy=False), deep=1))
+      pts.Modified(); modelNode.GetPolyData().Modified()
+
+      # Optionally landmarks too
+      if landmarksNode is not None:
+          P = slicer.util.arrayFromMarkupsControlPoints(landmarksNode).astype(np.float64, copy=False)
+          P1 = self._tps_eval_3d(P, src_used, W, A)
+          with slicer.util.NodeModify(landmarksNode):
+              slicer.util.updateMarkupsControlPointsFromArray(landmarksNode, P1.astype(np.float32, copy=False))
+
+      return V0, V1
 
 
   def convertMatrixToTransformNode(self, matrix, transformName):
@@ -740,17 +1229,28 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     polydata_vtk = vtk.vtkPolyData(); polydata_vtk.SetPoints(points_vtk)
     return polydata_vtk
 
-  def displayPointCloud(self, polydata, pointRadius, nodeName, nodeColor):
-    vgf = vtk.vtkVertexGlyphFilter(); vgf.SetInputData(polydata); vgf.Update()
+  def displayPointCloud(self, polydata, nodeName, nodeColor, frac=0.004, refNode=None):
+    pd = vtk.vtkPolyData(); pd.DeepCopy(polydata)
+    # radius from reference (target) bounds
+    if refNode is not None:
+        b = np.array(refNode.GetPolyData().GetBounds(), float).reshape(3,2)
+        radius = 0.5 * np.max(b[:,1]-b[:,0]) * float(frac)
+    else:
+        pts = vtk_np.vtk_to_numpy(pd.GetPoints().GetData())
+        d = np.linalg.norm(pts.max(0) - pts.min(0))
+        radius = float(frac) * d
+
+    sph = vtk.vtkSphereSource(); sph.SetRadius(radius); sph.SetThetaResolution(8); sph.SetPhiResolution(8)
+    g = vtk.vtkGlyph3D(); g.SetInputData(pd); g.SetSourceConnection(sph.GetOutputPort()); g.ScalingOff(); g.Update()
+
     node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode', nodeName); node.CreateDefaultDisplayNodes()
-    node.SetAndObservePolyData(vgf.GetOutput()); node.GetDisplayNode().SetColor(nodeColor)
-    nd = node.GetDisplayNode()
-    if hasattr(nd,'SetPointSize'): nd.SetPointSize(max(1,int(round(pointRadius*100))))  # visual size
+    node.SetAndObservePolyData(g.GetOutput()); node.GetDisplayNode().SetColor(nodeColor)
     return node
 
 
   def estimateTransform(self, sourcePoints, targetPoints, sourceFeatures, targetFeatures, voxelSize, parameters):
     import tiny3d as t3d
+    t3d.utility.random.seed(int(42))
     distanceThreshold = voxelSize * parameters["distanceThreshold"]
     if not sourcePoints.has_normals():
       sourcePoints.estimate_normals(t3d.geometry.KDTreeSearchParamHybrid(radius=voxelSize * parameters["normalSearchRadius"], max_nn=30))
@@ -783,6 +1283,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
 
   def runSubsample(self, sourceNode, targetNode, skipScaling, parameters):
     import tiny3d as t3d
+    t3d.utility.random.seed(int(42))
     src_pd = sourceNode.GetPolyData(); tgt_pd = targetNode.GetPolyData()
     sourcePoints_np = vtk_np.vtk_to_numpy(src_pd.GetPoints().GetData()); targetPoints_np = vtk_np.vtk_to_numpy(tgt_pd.GetPoints().GetData())
     source = t3d.geometry.PointCloud(); source.points = t3d.utility.Vector3dVector(sourcePoints_np)
@@ -816,6 +1317,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
 
   def preprocess_point_cloud(self, pcd, voxel_size, radius_normal_factor, radius_feature_factor):
     import tiny3d as t3d
+    t3d.utility.random.seed(int(42))
     pcd_down = pcd.voxel_down_sample(voxel_size)
     if len(pcd_down.points) == 0:
       raise RuntimeError(f"Downsampling produced 0 points at voxel={voxel_size:.4f}. Increase point density or reduce voxel size.")
@@ -860,93 +1362,79 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     for i in range(fiducialNode.GetNumberOfControlPoints()): points.InsertNextPoint(fiducialNode.GetNthControlPointPosition(i))
     return points
 
-  def projectPointsPolydataCoherent(self, sourcePolydata, targetPolydata,
-                                    originalPoints, rayLength,
-                                    k_neighbors=6, lambda_cohere=2.0,
-                                    snap_to_surface=True):
-      # --- Locators ---
-      srcPtLoc = vtk.vtkStaticPointLocator(); srcPtLoc.SetDataSet(sourcePolydata); srcPtLoc.BuildLocator()
-      celLoc   = vtk.vtkStaticCellLocator();  celLoc.SetDataSet(targetPolydata);   celLoc.BuildLocator()
-      obbTree  = vtk.vtkOBBTree();            obbTree.SetDataSet(targetPolydata);  obbTree.BuildLocator()
-      nrmArr   = sourcePolydata.GetPointData().GetNormals()
-      if not nrmArr: 
-          # fall back: nearest points only
-          pts = vtk.vtkPoints()
-          for i in range(originalPoints.GetNumberOfPoints()):
-              p0 = np.array(originalPoints.GetPoint(i))
-              q,_ = self._closest_point_on_surface(celLoc, p0)
-              pts.InsertNextPoint(q)
-          out = vtk.vtkPolyData(); out.SetPoints(pts); return out
+  def projectPointsPolydataCoherent(self, sourcePolydata, targetPolydata, originalPoints, rayLength, k_neighbors=6, lambda_cohere=2.0, snap_to_surface=True, surface_tol=5e-4, outward_eps=1e-3, use_outer_surface=True):
+      # --- target prep (single outer skin + normals + SDF) ---
+      def _outer(pd):
+          if not use_outer_surface: return pd
+          tf=vtk.vtkTriangleFilter(); tf.SetInputData(pd); tf.Update(); tri=tf.GetOutput()
+          b=np.array(tri.GetBounds(),float).reshape(3,2); c=b.mean(1); d=float(np.linalg.norm(b[:,1]-b[:,0]))+1e-12
+          cf=vtk.vtkPolyDataConnectivityFilter(); cf.SetInputData(tri)
+          cf.SetExtractionModeToClosestPointRegion(); cf.SetClosestPoint(float(c[0]),float(c[1]),float(c[2]+10*d)); cf.Update()
+          out=vtk.vtkPolyData(); out.DeepCopy(cf.GetOutput()); return out
+      tgt0=_outer(targetPolydata)
+      nrm=vtk.vtkPolyDataNormals(); nrm.SetInputData(tgt0); nrm.SplittingOff(); nrm.ConsistencyOn(); nrm.AutoOrientNormalsOn()
+      nrm.ComputeCellNormalsOn(); nrm.ComputePointNormalsOff(); nrm.Update(); tgt=nrm.GetOutput()
+      cellLoc=vtk.vtkStaticCellLocator(); cellLoc.SetDataSet(tgt); cellLoc.BuildLocator()
+      sdf=vtk.vtkImplicitPolyDataDistance(); sdf.SetInput(tgt)
+      cellN=tgt.GetCellData().GetNormals()
+      B=np.array(tgt.GetBounds(),float).reshape(3,2); diag=float(np.linalg.norm(B[:,1]-B[:,0]))+1e-12
+      tol=float(surface_tol)*diag; eps=float(outward_eps)*diag; maxmove=float(rayLength)*1.0  # rayLength is already in “diag” units in your UI
 
-      # --- Build anchors + confidences ---
-      N = originalPoints.GetNumberOfPoints()
-      P0 = np.array([originalPoints.GetPoint(i) for i in range(N)], dtype=float)
-      A  = np.empty((N,3), dtype=float)
-      w  = np.empty((N,),  dtype=float)
+      # --- data & masks ---
+      N=originalPoints.GetNumberOfPoints()
+      P0=np.array([originalPoints.GetPoint(i) for i in range(N)],float)
+      d0=np.array([sdf.FunctionValue(P0[i]) for i in range(N)],float)  # signed distance
+      fixed_mask=(d0>=0.0)&(np.abs(d0)<=tol)         # already on/near *exterior* surface => freeze
+      move_mask=~fixed_mask                           # move the rest (outside but far, or inside)
+      if not np.any(move_mask):
+          out=vtk.vtkPolyData(); pts=vtk.vtkPoints()
+          for i in range(N): pts.InsertNextPoint(P0[i]); out.SetPoints(pts); return out
 
-      for i in range(N):
-          p0 = P0[i]
-          # source normal at nearest source vertex
-          pid = srcPtLoc.FindClosestPoint(p0)
-          n   = np.array(nrmArr.GetTuple(pid), dtype=float)
-          ln  = np.linalg.norm(n)
-          if ln < 1e-12:
-              q, _ = self._closest_point_on_surface(celLoc, p0)
-              A[i] = q; w[i] = 0.5
-              continue
-          n /= ln
+      # --- anchors only for moving points (nearest surface + outward nudge if inside) ---
+      A=np.empty((N,3),float); w=np.zeros((N,),float)
+      cp=[0.0,0.0,0.0]; cid=vtk.mutable(0); sid=vtk.mutable(0); d2=vtk.mutable(0.0)
+      for i in np.where(move_mask)[0]:
+          cellLoc.FindClosestPoint(P0[i].tolist(),cp,cid,sid,d2)
+          q=np.array(cp,float)
+          if d0[i]<0.0:  # inside: push outward using SDF gradient at the closest point
+              g=np.zeros(3); sdf.FunctionGradient(q,g); ng=np.linalg.norm(g)
+              if ng>0: q=q+(eps*(g/ng))
+          A[i]=q; w[i]=0.7
+      A[fixed_mask]=P0[fixed_mask]  # irrelevant for fixed, but keeps arrays dense
 
-          best = None
-          for sgn in (1.0, -1.0):
-              p1 = (p0 + sgn * n * rayLength).tolist()
-              hits = vtk.vtkPoints()
-              obbTree.IntersectWithLine(p0.tolist(), p1, hits, None)
-              for j in range(hits.GetNumberOfPoints()):
-                  q = np.array(hits.GetPoint(j))
-                  v = q - p0
-                  d = np.linalg.norm(v)
-                  if d <= 1e-12: 
-                      continue
-                  cos = float(np.dot(v/d, n))
-                  if cos <= 0.0:
-                      continue  # back-facing; discard
-                  score = (cos, -d)  # prefer front-facing and nearer
-                  if (best is None) or (score > best[0]):
-                      best = (score, q)
+      # --- coherent masked solve: (W_MM+λL_MM) X_M = W_MM A_M - λ L_MF X_F  with X_F=P0_F ---
+      L,_,_ = self._knn_graph_laplacian(P0, k=k_neighbors, sigma=None)
+      from scipy import sparse
+      from scipy.sparse.linalg import spsolve
+      idxF=np.where(fixed_mask)[0]; idxM=np.where(move_mask)[0]
+      W = sparse.diags(w[idxM], 0, shape=(len(idxM),len(idxM)))
+      L_MM=L[idxM[:,None], idxM]; L_MF=L[idxM[:,None], idxF]
+      X = P0.copy()
+      XF = P0[idxF]
+      RHS = (W @ A[idxM])
+      # solve per coordinate
+      Msys = (W + float(lambda_cohere)*L_MM).tocsr()
+      add  = (-float(lambda_cohere))*(L_MF @ XF)
+      for c in range(3):
+          X[idxM,c] = spsolve(Msys, RHS[:,c] + add[:,c])
 
-          if best is not None:
-              q = best[1]
-              A[i] = q
-              # confidence: stronger when aligned & close
-              v = q - p0; d = np.linalg.norm(v) + 1e-12
-              cos = float(np.dot(v/d, n)); w[i] = min(1.0, max(0.2, 0.6*cos + 0.4))
-          else:
-              q, _ = self._closest_point_on_surface(celLoc, p0)
-              A[i] = q; w[i] = 0.3  # weaker confidence for nearest-only
-
-      # --- Coherence (graph Laplacian) ---
-      L, _, sigma = self._knn_graph_laplacian(P0, k=k_neighbors, sigma=None)
-      lam = float(lambda_cohere)
-
-      X = self._solve_screened_laplacian(A, w, L, lam)
-
-      # --- Safety: clamp max move & optional final snap ---
-      Xm = P0 + (X - P0)  # already absolute, kept for clarity
-      dvec = Xm - P0
-      dlen = np.linalg.norm(dvec, axis=1)
-      over = dlen > (rayLength + 1e-12)
-      if np.any(over):
-          scale = (rayLength / (dlen[over] + 1e-12))[:, None]
-          Xm[over] = P0[over] + dvec[over] * scale
+      # --- clamp travel and enforce exterior at the end (moved points only) ---
+      dvec=X-P0; dlen=np.linalg.norm(dvec,axis=1)
+      over = (dlen>maxmove+1e-12)&move_mask
+      if np.any(over): X[over]=P0[over]+dvec[over]*(maxmove/(dlen[over]+1e-12))[:,None]
 
       if snap_to_surface:
-          for i in range(N):
-              Xm[i], _ = self._closest_point_on_surface(celLoc, Xm[i])
+          for i in np.where(move_mask)[0]:
+              cellLoc.FindClosestPoint(X[i].tolist(),cp,cid,sid,d2)
+              q=np.array(cp,float)
+              if sdf.FunctionValue(q)<0.0:
+                  g=np.zeros(3); sdf.FunctionGradient(q,g); ng=np.linalg.norm(g)
+                  if ng>0: q=q+(eps*(g/ng))
+              X[i]=q
 
-      # --- Pack to polydata ---
-      pts = vtk.vtkPoints()
-      for i in range(N): pts.InsertNextPoint(Xm[i].tolist())
-      out = vtk.vtkPolyData(); out.SetPoints(pts); return out
+      pts=vtk.vtkPoints()
+      for i in range(N): pts.InsertNextPoint(X[i].tolist())
+      out=vtk.vtkPolyData(); out.SetPoints(pts); return out
 
 
   def _ssm_unpack(self, tableNode, drop_modes=None):
@@ -959,165 +1447,302 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     return mean, U, eig
 
   def initialize_template(self, tableNode, srcModelNode, srcCorrNode, srcLmNode, tgtModelNode, parameters,
-                        k=10, span=3.0, optimizer="powell", max_evals=240,
-                        eval_ransac_iters=50000, final_ransac_iters=200000, seed=0):
-    import numpy as np, tiny3d as t3d
-    from scipy.spatial import cKDTree
-    mean, U, eig = self._ssm_unpack(tableNode)
-    k = int(min(k, U.shape[2])); k_eff = max(1, k)
-    eig_k = eig[:k]; sqrt_eig_k = np.sqrt(eig_k)
-    M = mean.shape[0]
-    Uw_flat = (U[:, :, :k].reshape(-1, k) * sqrt_eig_k[None, :]); mean_flat = mean.reshape(-1)
-    def ssm_sample(b): return (mean_flat + Uw_flat @ np.asarray(b, float)).reshape(M, 3)
-    def bbox_diag_np(P): P = np.asarray(P); return float(np.linalg.norm(P.max(0) - P.min(0)))
-    oldCorr = slicer.util.arrayFromMarkupsControlPoints(srcCorrNode)
-    tgt_np = slicer.util.arrayFromModelPoints(tgtModelNode)
-    tgt_pcd = t3d.geometry.PointCloud(); tgt_pcd.points = t3d.utility.Vector3dVector(tgt_np)
-    s0 = bbox_diag_np(mean) / (bbox_diag_np(tgt_np) + 1e-12)
-    tgt_scaled = t3d.geometry.PointCloud(tgt_pcd); tgt_scaled.scale(s0, center=tgt_scaled.get_center())
-    size_scaled = float(np.linalg.norm(tgt_scaled.get_max_bound() - tgt_scaled.get_min_bound()))
-    voxel_f = size_scaled / (25.0 * float(parameters.get("pointDensity", 1.0)))
-    voxel_c = voxel_f * 1.5
-    rn = int(parameters.get("normalSearchRadius", 2)); rf = int(parameters.get("FPFHSearchRadius", 5))
-    tgt_down_f, tgt_fpfh_f = self.preprocess_point_cloud(tgt_scaled, voxel_f, rn, rf)
-    tgt_down_c, tgt_fpfh_c = self.preprocess_point_cloud(tgt_scaled, voxel_c, max(1, rn // 2), max(2, rf // 2))
-    dist_f = voxel_f * float(parameters.get("distanceThreshold", 3.0))
-    dist_c = voxel_c * float(parameters.get("distanceThreshold", 3.0))
-    try:
-        from scipy.stats import qmc
-        N = int(parameters.get("init_candidates", 192)); N = max(96, N)
-        dpow = int(np.ceil(np.log2(max(2, N))))
-        Sob = qmc.scale(qmc.Sobol(d=k, scramble=True, seed=seed).random_base2(dpow)[:N], -span, span)
-    except Exception:
-        rng0 = np.random.default_rng(seed); Sob = rng0.uniform(-span, span, size=(max(96, int(parameters.get("init_candidates", 384))), k))
-    m = min(k, 10); axis=[]
-    for a in (1.0, 0.5):
-        A = np.zeros((m, k)); A[np.arange(m), np.arange(m)] =  a * span; axis.append(A)
-        A = np.zeros((m, k)); A[np.arange(m), np.arange(m)] = -a * span; axis.append(A)
-    cand = np.unique(np.round(np.vstack([Sob, *axis]), 6), axis=0)
-    rho = float(parameters.get("reg_strength", 0.10))
-    w_rmse = float(parameters.get("w_rmse", 0.60))
-    w_reg = min(rho / k_eff, 0.25 / (k_eff * (span**2) + 1e-12))
-    LARGE = 1e6; bound_margin = float(parameters.get("bound_margin", 1e-5))
-    def clip_b(b): return np.clip(np.asarray(b, float), -span, span)
-    cand_pcd = t3d.geometry.PointCloud()
-    sp_norm_c = t3d.geometry.KDTreeSearchParamHybrid(radius=voxel_c * max(1, int(parameters.get("subsetNormalRadius", rn)) // 2), max_nn=20)
-    sp_feat_c = t3d.geometry.KDTreeSearchParamHybrid(radius=voxel_c * max(2, int(parameters.get("subsetFPFHRadius", rf)) // 2), max_nn=60)
-    sp_norm_f = t3d.geometry.KDTreeSearchParamHybrid(radius=voxel_f * float(parameters.get("subsetNormalRadius", rn)), max_nn=30)
-    sp_feat_f = t3d.geometry.KDTreeSearchParamHybrid(radius=voxel_f * float(parameters.get("subsetFPFHRadius", rf)), max_nn=100)
-    max_pts_cand_coarse = int(parameters.get("maxFeatPtsCoarse", 1800))
-    rng = np.random.default_rng(seed); feat_cache={}
-    def get_feat(b, coarse):
-        key = (tuple(np.round(np.asarray(b,float),6)), bool(coarse))
-        if key in feat_cache: return feat_cache[key]
-        pts = ssm_sample(b)
-        if coarse and (max_pts_cand_coarse>0) and (len(pts)>max_pts_cand_coarse):
-            idx = rng.choice(len(pts), size=max_pts_cand_coarse, replace=False); pts = pts[idx]
-        cand_pcd.points = t3d.utility.Vector3dVector(pts)
-        if coarse:
-            cand_pcd.estimate_normals(sp_norm_c); fpfh = t3d.pipelines.registration.compute_fpfh_feature(cand_pcd, sp_feat_c)
-            pack = (cand_pcd, fpfh, tgt_down_c, tgt_fpfh_c, dist_c)
-        else:
-            cand_pcd.estimate_normals(sp_norm_f); fpfh = t3d.pipelines.registration.compute_fpfh_feature(cand_pcd, sp_feat_f)
-            pack = (cand_pcd, fpfh, tgt_down_f, tgt_fpfh_f, dist_f)
-        feat_cache[key]=pack; return pack
-    best = {"score": -np.inf, "b": None, "fit": None, "rmse": None, "T": None}
-    cache={}
-    def _seed_backend(s):
-        try:
-            t3d.utility.random.seed(int(s)&0x7fffffff)
-        except Exception:
-            pass
-    def eval_once(b, iters, coarse, s):
-        _seed_backend(s)
-        cand_down, cand_fpfh, td, tf, dth = get_feat(b, coarse)
-        r = t3d.pipelines.registration.registration_ransac_based_on_feature_matching(
-            cand_down, td, cand_fpfh, tf, True, dth,
-            t3d.pipelines.registration.TransformationEstimationPointToPoint(False), 3,
-            [t3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
-             t3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(dth)],
-            t3d.pipelines.registration.RANSACConvergenceCriteria(int(iters), float(parameters.get("confidence", 0.95))))
-        ev = t3d.pipelines.registration.evaluate_registration(cand_down, td, dth, r.transformation)
-        size_td = float(np.linalg.norm(td.get_max_bound()-td.get_min_bound()))
-        rmse_n = ev.inlier_rmse/(size_td+1e-12)
-        return r.transformation, float(ev.fitness), float(rmse_n)
-    iL = 1.0/(eig_k+1e-12)
-    restarts_coarse = int(parameters.get("restarts_coarse", 2))
-    restarts_fine   = int(parameters.get("restarts_fine",   4))
-    restarts_final  = int(parameters.get("restarts_final",  8))
-    def eval_bestof(b, iters, coarse, n):
-        itp = max(4, int(iters//max(1,n)))
-        best_loc = (-np.inf, None, None, None)
-        for j in range(n):
-            try:
-                T, fit, rmse = eval_once(b, itp, coarse, seed+7919*j+ (13 if coarse else 29))
-                sc = fit - w_rmse*rmse
-                if np.isfinite(sc) and sc>best_loc[0]: best_loc=(sc,T,fit,rmse)
-            except Exception:
-                continue
-        if best_loc[1] is None: raise RuntimeError("RANSAC failed")
-        return best_loc[1], best_loc[2], best_loc[3]
-    def score_geom(b, iters, coarse, nrestarts):
-        b = clip_b(b); key = (tuple(np.round(b,6)), bool(coarse), int(iters), int(nrestarts))
-        if key in cache: return cache[key]["neg"]
-        reg = float(b @ (iL * b))
-        rmse_headroom = 0.05
-        ub = 1.0 - w_rmse*0.0 - w_reg*reg
-        lb_best = best["score"] - (w_rmse * rmse_headroom)
-        if best["score"] > -np.inf and ub <= lb_best - bound_margin:
-            cache[key] = {"neg": LARGE + reg}; return cache[key]["neg"]
-        if ssm_sample(b).shape != oldCorr.shape:
-            cache[key] = {"neg": LARGE}; return cache[key]["neg"]
-        try:
-            T, fit, rmse = eval_bestof(b, iters, coarse, nrestarts)
-        except Exception:
-            cache[key] = {"neg": LARGE}; return cache[key]["neg"]
-        score = fit - w_rmse*rmse - w_reg*reg
-        if np.isfinite(score) and score > best["score"]:
-            best.update(score=score, b=b.copy(), fit=float(fit), rmse=float(rmse), T=T.copy())
-        cache[key] = {"neg": -score}; return cache[key]["neg"]
-    def keep_diverse(C_sorted, keep):
-        if not C_sorted: return []
-        X = np.asarray(C_sorted, float); sel=[0]; d=np.linalg.norm(X-X[0],axis=1)
-        for _ in range(1, min(keep, len(X))):
-            i=int(np.argmax(d)); sel.append(i); d=np.minimum(d, np.linalg.norm(X-X[i],axis=1))
-        return [X[i].tolist() for i in sel]
-    budgets = [0.01, 0.04, 0.2]; keeps = [192, 48, 12]
-    C = cand.tolist()
-    it = max(1, int(budgets[0]*eval_ransac_iters))
-    C = sorted(C, key=lambda x: score_geom(x, it, True, restarts_coarse))[:min(keeps[0], len(C))]
-    C = keep_diverse(C, min(keeps[0], len(C)))
-    it = max(1, int(budgets[1]*eval_ransac_iters))
-    C = sorted(C, key=lambda x: score_geom(x, it, True, restarts_coarse))[:min(keeps[1], len(C))]
-    C = keep_diverse(C, min(keeps[1], len(C)))
-    it = max(1, int(budgets[2]*eval_ransac_iters))
-    C = sorted(C, key=lambda x: score_geom(x, it, False, restarts_fine))[:min(keeps[2], len(C))]
-    C = keep_diverse(C, min(keeps[2], len(C)))
-    x0 = np.zeros(k, float)
-    if optimizer.lower()=="de":
-        from scipy.optimize import differential_evolution
-        bounds = [(-span, span)]*k
-        res = differential_evolution(lambda x: score_geom(x, eval_ransac_iters, False, restarts_fine),
-                                     bounds=bounds, strategy="best1bin", popsize=8, maxiter=max(1, max_evals//8),
-                                     tol=1e-3, polish=False, seed=seed, updating="deferred", workers=1)
-        b_star = clip_b(res.x)
-    else:
-        from scipy.optimize import minimize
-        start = C[0] if len(C) else x0
-        per = max(1, int(0.5*max_evals))
-        r = minimize(lambda x: score_geom(x, eval_ransac_iters, False, restarts_fine),
-                     x0=clip_b(start), method="Powell",
-                     options={"maxfev": per, "xtol":1e-3, "ftol":1e-3, "disp":False})
-        b_star = clip_b(r.x if (hasattr(r,"x") and r.x is not None) else start)
-    _ = score_geom(b_star, final_ransac_iters, False, restarts_final)
-    if best["b"] is None: raise RuntimeError("Optimization failed to find a valid candidate.")
-    b_best, T_best = best["b"], best["T"]
-    newCorr = ssm_sample(b_best); disp = newCorr - oldCorr; warp_tree = cKDTree(oldCorr)
-    srcModelNode.CreateDefaultDisplayNodes(); self.warp_node(node_to_warp=srcModelNode, tree=warp_tree, disp=disp)
-    if srcLmNode is not None: self.warp_node(node_to_warp=srcLmNode, tree=warp_tree, disp=disp)
-    slicer.util.updateMarkupsControlPointsFromArray(srcCorrNode, newCorr)
-    print(f"[opt] ||b||={np.linalg.norm(b_best):.3f} fit={best['fit']:.3f} rmse={best['rmse']:.3f} evals≈{len(cache)}")
-    return b_best, T_best
+                          k=10, span=2.5, optimizer="powell", max_evals=240,
+                          eval_ransac_iters=50000, final_ransac_iters=200000, seed=0):
+      import numpy as np, tiny3d as t3d
+      self.last_opt_info = None
+
+      mean, U, eig = self._ssm_unpack(tableNode)
+      k = int(min(k, U.shape[2])); k_eff = max(1, k)
+      eig_k = eig[:k]; sqrt_eig_k = np.sqrt(eig_k)
+      M = mean.shape[0]
+      Uw_flat = (U[:, :, :k].reshape(-1, k) * sqrt_eig_k[None, :])
+      mean_flat = mean.reshape(-1)
+      def ssm_sample(b): return (mean_flat + Uw_flat @ np.asarray(b, float)).reshape(M, 3)
+      def bbox_diag_np(P): P = np.asarray(P); return float(np.linalg.norm(P.max(0) - P.min(0)))
+
+      # -- target prep (exactly as before) --
+      oldCorr = slicer.util.arrayFromMarkupsControlPoints(srcCorrNode)
+      tgt_np  = slicer.util.arrayFromModelPoints(tgtModelNode)
+      tgt_pcd = t3d.geometry.PointCloud(); tgt_pcd.points = t3d.utility.Vector3dVector(tgt_np)
+      s0 = bbox_diag_np(mean) / (bbox_diag_np(tgt_np) + 1e-12)
+      tgt_scaled = t3d.geometry.PointCloud(tgt_pcd); tgt_scaled.scale(s0, center=tgt_scaled.get_center())
+      size_scaled = float(np.linalg.norm(tgt_scaled.get_max_bound() - tgt_scaled.get_min_bound()))
+      voxel_f = size_scaled / (25.0 * float(parameters.get("pointDensity", 1.0)))
+      voxel_c = voxel_f * 1.5
+      rn = int(parameters.get("normalSearchRadius", 2)); rf = int(parameters.get("FPFHSearchRadius", 5))
+      tgt_down_f, tgt_fpfh_f = self.preprocess_point_cloud(tgt_scaled, voxel_f, rn, rf)
+      tgt_down_c, tgt_fpfh_c = self.preprocess_point_cloud(tgt_scaled, voxel_c, max(1, rn // 2), max(2, rf // 2))
+      dist_f = voxel_f * float(parameters.get("distanceThreshold", 3.0))
+      dist_c = voxel_c * float(parameters.get("distanceThreshold", 3.0))
+
+      # -- helpers shared by baseline & candidates --
+      def _eval_pack(pack, iters, s):
+          cand_down, cand_fpfh, td, tf, dth = pack
+          r = t3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+              cand_down, td, cand_fpfh, tf, False, dth,
+              t3d.pipelines.registration.TransformationEstimationPointToPoint(False), 3,
+              [t3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
+              t3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(dth)],
+              t3d.pipelines.registration.RANSACConvergenceCriteria(int(iters), float(parameters.get("confidence", 0.95))))
+          ev = t3d.pipelines.registration.evaluate_registration(cand_down, td, dth, r.transformation)
+          size_td = float(np.linalg.norm(td.get_max_bound() - td.get_min_bound()))
+          rmse_n = ev.inlier_rmse / (size_td + 1e-12)
+          return r.transformation, float(ev.fitness), float(rmse_n)
+
+      def _get_feat_from_points(pts_np, coarse):
+          p = t3d.geometry.PointCloud(); p.points = t3d.utility.Vector3dVector(np.asarray(pts_np, float))
+          if coarse:
+              pd, f = self.preprocess_point_cloud(p, voxel_c, max(1, rn // 2), max(2, rf // 2))
+              return (pd, f, tgt_down_c, tgt_fpfh_c, dist_c)
+          pd, f = self.preprocess_point_cloud(p, voxel_f, rn, rf)
+          return (pd, f, tgt_down_f, tgt_fpfh_f, dist_f)
+
+      # -------------------------
+      # 1) Baseline (original template) score
+      # -------------------------
+      w_rmse = float(parameters.get("w_rmse", 0.60))
+      tau_fit  = float(parameters.get("opt_skip_if_fit_ge", 0.82))
+      tau_rmse = float(parameters.get("opt_skip_if_rmse_le", 0.025))  # normalized
+
+      src_pts_np = slicer.util.arrayFromModelPoints(srcModelNode)   # current template geometry
+      base_pack  = _get_feat_from_points(src_pts_np, coarse=False)
+      try:
+          T_base, fit_base, rmse_base = _eval_pack(base_pack, final_ransac_iters, seed+101)
+          score_base = fit_base - w_rmse * rmse_base
+          best = {"score": score_base, "b": None, "fit": fit_base, "rmse": rmse_base, "T": T_base}
+      except Exception:
+          # Fall back if baseline eval failed
+          best = {"score": -np.inf, "b": None, "fit": None, "rmse": None, "T": None}
+
+      # Early exit if "already good"
+      if (best["score"] > -np.inf) and (fit_base >= tau_fit) and (rmse_base <= tau_rmse):
+          print(f"[opt] Skip: baseline good (fit={fit_base:.3f}, rmse_n={rmse_base:.3f})")
+          # DO NOT warp template/correspondences; caller will apply T_base rigidly
+          self.last_opt_info = {
+              "decision": "baseline_good",
+              "fit": float(fit_base),
+              "rmse": float(rmse_base),
+              "norm_b": 0.0
+          }
+          return np.zeros(k, float), T_base
+
+      # -------------------------
+      # 2) Candidate search (unchanged logic, but seeded by baseline)
+      # -------------------------
+      def get_feat(b, coarse):
+          pts = ssm_sample(b)
+          # optional candidate thinning for coarse stage
+          max_pts_cand_coarse = int(parameters.get("maxFeatPtsCoarse", 1800))
+          if coarse and (max_pts_cand_coarse > 0) and (len(pts) > max_pts_cand_coarse):
+              rng = np.random.default_rng(seed)
+              idx = rng.choice(len(pts), size=max_pts_cand_coarse, replace=False)
+              pts = pts[idx]
+          return _get_feat_from_points(pts, coarse)
+
+      def eval_bestof(b, iters, coarse, nrestarts):
+          itp = max(4, int(iters // max(1, nrestarts)))
+          best_loc = (-np.inf, None, None, None)
+          for j in range(nrestarts):
+              try:
+                  T, fit, rmse = _eval_pack(get_feat(b, coarse), itp, seed+7919*j+(13 if coarse else 29))
+                  sc = fit - w_rmse * rmse
+                  if np.isfinite(sc) and sc > best_loc[0]: best_loc = (sc, T, fit, rmse)
+              except Exception:
+                  continue
+          if best_loc[1] is None: raise RuntimeError("RANSAC failed")
+          return best_loc[1], best_loc[2], best_loc[3]
+
+      iL = 1.0 / (eig_k + 1e-12)
+      rho = float(parameters.get("reg_strength", 0.10))
+      w_reg = min(rho / k_eff, 0.25 / (k_eff * (span**2) + 1e-12))
+      LARGE = 1e6; bound_margin = float(parameters.get("bound_margin", 1e-5))
+      def clip_b(b): return np.clip(np.asarray(b, float), -span, span)
+
+      cache={}
+      def score_geom(b, iters, coarse, nrestarts):
+          b = clip_b(b); key = (tuple(np.round(b,6)), bool(coarse), int(iters), int(nrestarts))
+          if key in cache: return cache[key]["neg"]
+          reg = float(b @ (iL * b))
+          rmse_headroom = 0.05
+          # upper bound on possible score for pruning
+          ub = 1.0 - w_rmse*0.0 - w_reg*reg
+          lb_best = best["score"] - (w_rmse * rmse_headroom)
+          if best["score"] > -np.inf and ub <= lb_best - bound_margin:
+              cache[key] = {"neg": LARGE + reg}; return cache[key]["neg"]
+          if ssm_sample(b).shape != oldCorr.shape:
+              cache[key] = {"neg": LARGE}; return cache[key]["neg"]
+          try:
+              T, fit, rmse = eval_bestof(b, iters, coarse, int(parameters.get("restarts_coarse" if coarse else "restarts_fine", 4)))
+          except Exception:
+              cache[key] = {"neg": LARGE}; return cache[key]["neg"]
+          score = fit - w_rmse*rmse - w_reg*reg
+          if np.isfinite(score) and score > best["score"]:
+              best.update(score=score, b=b.copy(), fit=float(fit), rmse=float(rmse), T=T.copy())
+          cache[key] = {"neg": -score}; return cache[key]["neg"]
+
+      # candidate pool (as in your version; kept brief)
+      try:
+          from scipy.stats import qmc
+          N = int(parameters.get("init_candidates", 192)); N = max(96, N)
+          dpow = int(np.ceil(np.log2(max(2, N))))
+          Sob = qmc.scale(qmc.Sobol(d=k, scramble=True, seed=seed).random_base2(dpow)[:N], -span, span)
+      except Exception:
+          rng0 = np.random.default_rng(seed); Sob = rng0.uniform(-span, span, size=(max(96, int(parameters.get("init_candidates", 384))), k))
+      m = min(k, 10); axis=[]
+      for a in (1.0, 0.5):
+          A = np.zeros((m, k)); A[np.arange(m), np.arange(m)] =  a * span; axis.append(A)
+          A = np.zeros((m, k)); A[np.arange(m), np.arange(m)] = -a * span; axis.append(A)
+      Pool = np.unique(np.round(np.vstack([Sob, *axis]), 6), axis=0)
+
+      # small coarse then fine scoring passes
+      beam_B = int(parameters.get("beam_width", 24))
+      def _embed_candidates(B, seed):
+          B = np.asarray(B, float)
+          Bz = (B - B.mean(0, keepdims=True)) / (B.std(0, keepdims=True) + 1e-9)
+          try:
+              import umap
+              Z = umap.UMAP(n_neighbors=15, min_dist=0.1, metric="euclidean",
+                            random_state=int(seed)&0x7fffffff).fit_transform(Bz)
+          except Exception:
+              U2, S2, _ = np.linalg.svd(Bz, full_matrices=False); Z = U2[:, :2] * S2[:2]
+          return np.asarray(Z, float)
+      def _fps_2d(Z, k):
+          n=Z.shape[0]
+          if n==0: return np.zeros((0,), dtype=int)
+          start=int(np.argmax(np.linalg.norm(Z-Z.mean(0,keepdims=True),axis=1)))
+          sel=[start]; d=np.linalg.norm(Z-Z[start],axis=1)
+          for _ in range(1, min(k,n)):
+              i=int(np.argmax(d)); sel.append(i); d=np.minimum(d, np.linalg.norm(Z-Z[i],axis=1))
+          return np.array(sel, int)
+      Z = _embed_candidates(Pool, seed+23); C = Pool[_fps_2d(Z, min(beam_B, len(Pool)))]
+
+      budgets = [0.02, 0.15]
+      keeps   = [beam_B, max(12, beam_B // 2)]
+      it = max(1, int(budgets[0] * eval_ransac_iters))
+      C = sorted(C, key=lambda x: score_geom(x, it, True, int(parameters.get("restarts_coarse", 2))))[:min(keeps[0], len(C))]
+      # quick geometric diversity
+      def keep_diverse(C_sorted, keep):
+          if not C_sorted: return []
+          X = np.asarray(C_sorted, float); sel=[0]; d=np.linalg.norm(X-X[0],axis=1)
+          for _ in range(1, min(keep, len(X))):
+              i=int(np.argmax(d)); sel.append(i); d=np.minimum(d, np.linalg.norm(X-X[i],axis=1))
+          return [X[i].tolist() for i in sel]
+      C = keep_diverse(C, min(keeps[0], len(C)))
+
+      it = max(1, int(budgets[1] * eval_ransac_iters))
+      C = sorted(C, key=lambda x: score_geom(x, it, False, int(parameters.get("restarts_fine", 4))))[:min(keeps[1], len(C))]
+      C = keep_diverse(C, min(keeps[1], len(C)))
+
+      # local refinement
+      if optimizer.lower() == "de":
+          from scipy.optimize import differential_evolution
+          bounds = [(-span, span)]*k
+          res = differential_evolution(lambda x: score_geom(x, eval_ransac_iters, False, int(parameters.get("restarts_fine", 4))),
+                                      bounds=bounds, strategy="best1bin", popsize=8, maxiter=max(1, max_evals//8),
+                                      tol=1e-3, polish=False, seed=seed, updating="deferred", workers=1)
+          b_star = np.clip(res.x, -span, span)
+      else:
+          from scipy.optimize import minimize
+          start = best["b"] if best["b"] is not None else (np.asarray(C[0]) if len(C) else np.zeros(k))
+          per = max(1, int(0.5 * max_evals))
+          r = minimize(lambda x: score_geom(x, eval_ransac_iters, False, int(parameters.get("restarts_fine", 4))),
+                      x0=np.clip(start, -span, span), method="Powell",
+                      options={"maxfev": per, "xtol":1e-3, "ftol":1e-3, "disp":False})
+          b_star = np.clip(getattr(r, "x", start), -span, span)
+
+      _ = score_geom(b_star, final_ransac_iters, False, int(parameters.get("restarts_final", 8)))
+      if best["score"] == -np.inf:
+          raise RuntimeError("Optimization failed to find a valid candidate.")
+      used_baseline = (best["b"] is None)
+
+      # -------------------------
+      # 3) Apply only if candidate beats baseline
+      # -------------------------
+      if not used_baseline:
+          # warp to SSM sample (your existing backend choices)
+          newCorr = ssm_sample(best["b"])
+          use_bih = bool(parameters.get("useBiharmonic", False))
+          if use_bih:
+              lam = float(parameters.get("bih_lam_init", parameters.get("bih_lam", 1e4)))
+              try:
+                  V0, V1, F = self.warp_model_biharmonic(srcModelNode, oldCorr, newCorr, lam=lam)
+                  if srcLmNode is not None: self.warp_markups_barycentric(srcLmNode, V0, V1, F)
+              except Exception as e:
+                  logging.warning(f"[opt] Biharmonic warp failed; falling back to TPS. Reason: {e}")
+                  lam_tps  = float(parameters.get("tpsLambda", 0.0))
+                  max_corr = int(parameters.get("tpsMaxCorr", 800))
+                  self.warp_model_tps(srcModelNode, oldCorr, newCorr, lam=lam_tps, max_corr=max_corr, seed=0, landmarksNode=srcLmNode)
+          else:
+              lam_tps  = float(parameters.get("tpsLambda", 0.0))
+              max_corr = int(parameters.get("tpsMaxCorr", 800))
+              self.warp_model_tps(srcModelNode, oldCorr, newCorr, lam=lam_tps, max_corr=max_corr, seed=0, landmarksNode=srcLmNode)
+          slicer.util.updateMarkupsControlPointsFromArray(srcCorrNode, newCorr)  # keep dense corr = exact SSM sample
+          print(f"[opt] candidate beat baseline: ||b||={np.linalg.norm(best['b']):.3f} fit={best['fit']:.3f} rmse={best['rmse']:.3f}")
+          self.last_opt_info = {
+              "decision": "candidate_chosen",
+              "fit": float(best["fit"]),
+              "rmse": float(best["rmse"]),
+              "norm_b": float(np.linalg.norm(best["b"]))
+          }
+          return best["b"], best["T"]
+
+      # baseline wins → DO NOT warp; return zeros and the baseline rigid
+      print(f"[opt] baseline kept: fit={best['fit']:.3f} rmse={best['rmse']:.3f}")
+      self.last_opt_info = {
+          "decision": "baseline_kept",
+          "fit": float(best["fit"]),
+          "rmse": float(best["rmse"]),
+          "norm_b": 0.0
+      }
+      return np.zeros(k, float), best["T"]
+
+  def _closest_point_on_surface(self, cellLocator, p):
+    # Returns closest point on triangles (not vertices)
+    cp = [0.0, 0.0, 0.0]
+    cid = vtk.reference(0); sid = vtk.reference(0); d2 = vtk.reference(0.0)
+    cellLocator.FindClosestPoint(p, cp, cid, sid, d2)
+    return np.array(cp, dtype=float), float(d2)
+
+  def _knn_graph_laplacian(self, X, k=6, sigma=None):
+      # X: (N,3); returns L (N×N CSR), and degree-normalized weights W_ij
+      from scipy.spatial import cKDTree
+      from scipy import sparse
+      X = np.asarray(X, float)
+      N = X.shape[0]
+      tree = cKDTree(X)
+      d, idx = tree.query(X, k=k+1)          # first neighbor is self
+      idx = idx[:, 1:]; d = d[:, 1:]
+      if sigma is None:
+          sigma = np.median(d[:, -1]) + 1e-12
+      wij = np.exp(-(d**2) / (2.0 * sigma**2))
+      # Build symmetric weight matrix
+      rows = np.repeat(np.arange(N), k)
+      cols = idx.ravel()
+      data = wij.ravel()
+      W = sparse.coo_matrix((data, (rows, cols)), shape=(N, N))
+      # symmetrize
+      W = (W + W.T) * 0.5
+      # Laplacian
+      deg = np.array(W.sum(axis=1)).ravel()
+      L = sparse.diags(deg) - W
+      return L.tocsr(), W.tocsr(), sigma
+
+  def _solve_screened_laplacian(self, A, w_diag, L, lam):
+      # (W + λL) X = W A ; solve per coordinate with spsolve
+      from scipy import sparse
+      from scipy.sparse.linalg import spsolve
+      N = A.shape[0]
+      W = sparse.diags(w_diag, offsets=0, shape=(N, N), format='csr')
+      M = (W + lam * L).tocsr()
+      X = np.zeros_like(A)
+      # Solve for x,y,z independently
+      for c in range(3):
+          rhs = W @ A[:, c]
+          X[:, c] = spsolve(M, rhs)
+      return X
+
+
 
   def _closest_point_on_surface(self, cellLocator, p):
     # Returns closest point on triangles (not vertices)

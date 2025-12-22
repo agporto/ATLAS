@@ -185,7 +185,8 @@ class BUILDERWidget(ScriptedLoadableModuleWidget):
     if self.loadAtlasRadio.isChecked():
       self._status("Loading atlas model and landmarks…")
       atlasModel, atlasLMs = self._loadAtlas()
-      if not atlasModel or not atlasLMs: return
+      if not atlasModel or not atlasLMs:
+        return
     else:
       try:
         self._status("Generating atlas: finding closest-to-mean, pre-aligning, and averaging…")

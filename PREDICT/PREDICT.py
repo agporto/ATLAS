@@ -923,7 +923,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           mean_shape=None,
           U=U_aligned,
           eigenvalues=eigvals_eff,          # no external scaling/flooring
-          lambda_reg=float(parameters.get("lambda_reg", 0.4)),  # no scale² here
+          lambda_reg=float(parameters.get("lambda_reg", 0.2)),  # no scale² here
           alpha=float(parameters.get("alpha", 2.0)),
           w=float(parameters.get("w", 0.2)),
           tolerance=float(parameters.get("tolerance", 1e-6)),
@@ -1696,6 +1696,53 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           "norm_b": 0.0
       }
       return np.zeros(k, float), best["T"]
+
+  def _closest_point_on_surface(self, cellLocator, p):
+    # Returns closest point on triangles (not vertices)
+    cp = [0.0, 0.0, 0.0]
+    cid = vtk.reference(0); sid = vtk.reference(0); d2 = vtk.reference(0.0)
+    cellLocator.FindClosestPoint(p, cp, cid, sid, d2)
+    return np.array(cp, dtype=float), float(d2)
+
+  def _knn_graph_laplacian(self, X, k=6, sigma=None):
+      # X: (N,3); returns L (N×N CSR), and degree-normalized weights W_ij
+      from scipy.spatial import cKDTree
+      from scipy import sparse
+      X = np.asarray(X, float)
+      N = X.shape[0]
+      tree = cKDTree(X)
+      d, idx = tree.query(X, k=k+1)          # first neighbor is self
+      idx = idx[:, 1:]; d = d[:, 1:]
+      if sigma is None:
+          sigma = np.median(d[:, -1]) + 1e-12
+      wij = np.exp(-(d**2) / (2.0 * sigma**2))
+      # Build symmetric weight matrix
+      rows = np.repeat(np.arange(N), k)
+      cols = idx.ravel()
+      data = wij.ravel()
+      W = sparse.coo_matrix((data, (rows, cols)), shape=(N, N))
+      # symmetrize
+      W = (W + W.T) * 0.5
+      # Laplacian
+      deg = np.array(W.sum(axis=1)).ravel()
+      L = sparse.diags(deg) - W
+      return L.tocsr(), W.tocsr(), sigma
+
+  def _solve_screened_laplacian(self, A, w_diag, L, lam):
+      # (W + λL) X = W A ; solve per coordinate with spsolve
+      from scipy import sparse
+      from scipy.sparse.linalg import spsolve
+      N = A.shape[0]
+      W = sparse.diags(w_diag, offsets=0, shape=(N, N), format='csr')
+      M = (W + lam * L).tocsr()
+      X = np.zeros_like(A)
+      # Solve for x,y,z independently
+      for c in range(3):
+          rhs = W @ A[:, c]
+          X[:, c] = spsolve(M, rhs)
+      return X
+
+
 
   def _closest_point_on_surface(self, cellLocator, p):
     # Returns closest point on triangles (not vertices)

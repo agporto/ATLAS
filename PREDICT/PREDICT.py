@@ -144,6 +144,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     {"key":"skipScaling","kind":"check","label":"Skip scaling","section":"General Settings","value":False},
     {"key":"skipProjection","kind":"check","label":"Skip projection","section":"General Settings","value":False},
     {"key":"skipOptimization","kind":"check","label":"Skip template optimization (batch)","section":"General Settings","value":False},
+    {"key":"targetCoverage","kind":"dspin","label":"Target completeness (linear fraction)","section":"General Settings", "min":0.05,"max":1.0,"step":0.01,"value":1.0,"decimals":2},
     {"key":"pointDensity","kind":"slider","label":"Point Density","section":"Point density and max projection","min":0.1,"max":3.0,"step":0.1,"value":1.3},
     {"key":"projectionFactor","kind":"slider","label":"Max projection factor (%)","section":"Point density and max projection","min":0,"max":10,"step":0.1,"value":1.0},
     {"key":"normalSearchRadius","kind":"slider","label":"Normal search radius","section":"Rigid registration","min":2,"max":12,"step":1,"value":2},
@@ -425,7 +426,11 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.corresTemp  = self.cloneNode(corresOrig,  customName="Source Correspondences")
     self.lmTemp  = self.cloneNode(lmOrig,  customName="Landmarks")
     if not  self.parameterDictionary.get("skipScaling", False):
-        size_src=bounds_diag(self.srcTemp); size_tgt=bounds_diag(self.tgtTemp); self.scale = (size_tgt/size_src) if size_src>0 else 1.0
+        cov=float(self.parameterDictionary.get("targetCoverage",1.0))
+        cov=float(np.clip(cov, 1e-3, 1.0))
+        size_src=bounds_diag(self.srcTemp); size_tgt=bounds_diag(self.tgtTemp)
+        size_tgt_eff = size_tgt / cov   # “expected full” linear size
+        self.scale = (size_tgt_eff/size_src) if size_src>0 else 1.0
         t = vtk.vtkTransform(); t.Scale(self.scale, self.scale, self.scale)
         tn = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTransformNode','PreScale'); tn.SetAndObserveTransformToParent(t)
         for node in (self.srcTemp, self.corresTemp, self.lmTemp): node.SetAndObserveTransformNodeID(tn.GetID()); slicer.vtkSlicerTransformLogic().hardenTransform(node)
@@ -742,10 +747,16 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
             if status_callback: status_callback(f"[{i+1}/{total}] Skip optimization")
           b_src=np.array(tpl_model.GetPolyData().GetBounds()).reshape(3,2); b_tgt=np.array(tgt_node.GetPolyData().GetBounds()).reshape(3,2)
           size_src=np.linalg.norm(b_src[:,1]-b_src[:,0]); size_tgt=np.linalg.norm(b_tgt[:,1]-b_tgt[:,0])
-          s=(size_tgt/size_src) if size_src>0 else 1.0
-          T_scale=np.eye(4, dtype=np.float32); T_scale[:3,:3]*=s
-          tpl_model.SetAndObservePolyData(_apply_pd_transform(tpl_model.GetPolyData(), T_scale))
-          Ms=T_scale
+          cov=float(parameters.get("targetCoverage",1.0))
+          cov=float(np.clip(cov, 1e-3, 1.0))
+          if not skipScaling:
+            s=((size_tgt/cov)/size_src) if size_src>0 else 1.0
+            T_scale=np.eye(4, dtype=np.float32); T_scale[:3,:3]*=s
+            tpl_model.SetAndObservePolyData(_apply_pd_transform(tpl_model.GetPolyData(), T_scale))
+            Ms=T_scale
+          else:
+            s=1.0
+            Ms=np.eye(4, dtype=np.float32)
           corr_np=_apply_M_to_np(slicer.util.arrayFromMarkupsControlPoints(tpl_corr), Ms)
           lm_np  =_apply_M_to_np(slicer.util.arrayFromMarkupsControlPoints(tpl_lm),   Ms)
           with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, corr_np)
@@ -917,17 +928,23 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       d_tgt = _diag(np.asarray(targetSLM)); s20 = 20.0/max(d_tgt,1e-12)
       src_n = np.asarray(sourceLM)*s20; tgt_n = np.asarray(targetSLM)*s20
 
+      cov = float(parameters.get("targetCoverage", 1.0))
+      is_complete = abs(cov - 1.0) < 1e-6   # or: np.isclose(cov, 1.0)
+
+      with_scale = is_complete
+
       pca = AtlasRegistration(
           X=np.asarray(tgt_n),          # scaled target
           Y=np.asarray(src_n),            # mean_shape=None ⇒ Y is the base
           mean_shape=None,
           U=U_aligned,
           eigenvalues=eigvals_eff,          # no external scaling/flooring
-          lambda_reg=float(parameters.get("lambda_reg", 0.2)),  # no scale² here
+          lambda_reg=float(parameters.get("lambda_reg", 0.4)),  # no scale² here
           alpha=float(parameters.get("alpha", 2.0)),
           w=float(parameters.get("w", 0.2)),
           tolerance=float(parameters.get("tolerance", 1e-6)),
           max_iterations=int(parameters.get("max_iterations", 120)),
+          with_scale=False,
           normalize=True                    # << key change
       )
       warped_landmarks, _ = pca.register()
@@ -954,34 +971,59 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     return tf.GetOutput()
 
   def _cotangent_laplacian(self, V, F):
-      from scipy.sparse import coo_matrix, diags
+      from scipy import sparse
+      
+      # 1. Compute edge vectors for all faces at once
+      # V has shape (N, 3), F has shape (M, 3)
+      A = V[F[:, 0]]; B = V[F[:, 1]]; C = V[F[:, 2]]
+      e0 = B - C; e1 = C - A; e2 = A - B
+      
+      # 2. Compute area/normals (cross product magnitude)
+      # Using the fact that |cross(u,v)| = 2 * Area
+      cross_prod = np.cross(e0, -e2)
+      norm_n = np.linalg.norm(cross_prod, axis=1)
+      
+      # Filter degenerate triangles (zero area)
+      valid = norm_n > 1e-12
+      F = F[valid]; e0 = e0[valid]; e1 = e1[valid]; e2 = e2[valid]; norm_n = norm_n[valid]
+      
+      # 3. Compute Cotangents (dot / magnitude)
+      # cot(angle) = dot(u, v) / |cross(u, v)|
+      # We divide by 2*Area (norm_n) later, so we pre-multiply terms if needed
+      # Actually simpler: cot(alpha) = (e1 . e2) / |e1 x e2| ... careful with signs/orientation
+      # Standard formula: cot at vertex i (opposite edge e0) is -dot(e1, e2) / norm(cross(e1, e2))
+      
+      fact = 0.5 / norm_n
+      c0 = -np.sum(e1 * e2, axis=1) * fact
+      c1 = -np.sum(e2 * e0, axis=1) * fact
+      c2 = -np.sum(e0 * e1, axis=1) * fact
+      
+      # 4. Construct Sparse Matrix
+      # We have 3 cotangents per face. We need to assemble them into the NxN matrix.
+      # Rows/Cols indices
+      ii = F[:, [1, 2, 0]].ravel()
+      jj = F[:, [2, 0, 1]].ravel()
+      data = np.concatenate([c0, c1, c2]) # Corresponding cotangents
+      
+      # Use coo_matrix to handle duplicate entries (summing them automatically)
+      # We need both (i,j) and (j,i) symmetric entries
+      rows = np.concatenate([ii, jj])
+      cols = np.concatenate([jj, ii])
+      vals = np.concatenate([data, data]) * 0.5 
+      
       n = V.shape[0]
-      I, J, W = [], [], []
-      A = np.zeros(n, dtype=np.float64)  # lumped mass (per-vertex area)
-
-      for t in F:
-          i, j, k = int(t[0]), int(t[1]), int(t[2])
-          vi, vj, vk = V[i], V[j], V[k]
-          e0 = vj - vk; e1 = vk - vi; e2 = vi - vj
-          nrm = np.linalg.norm(np.cross(e0, -e2))
-          if nrm <= 1e-16:
-              continue
-          # cotangents at opposite corners
-          c0 = -np.dot(e0, e2) / nrm   # at i, opposite edge jk
-          c1 = -np.dot(e1, e0) / nrm   # at j, opposite edge ki
-          c2 = -np.dot(e2, e1) / nrm   # at k, opposite edge ij
-          Atri = 0.5 * nrm
-          A[i] += Atri / 3.0; A[j] += Atri / 3.0; A[k] += Atri / 3.0
-
-          for (a, b, cot) in ((j, k, c0), (k, i, c1), (i, j, c2)):
-              I.append(a); J.append(b); W.append(0.5 * cot)
-              I.append(b); J.append(a); W.append(0.5 * cot)
-
-      Lij = coo_matrix((W, (I, J)), shape=(n, n)).tocsr()
-      d = -np.array(Lij.sum(axis=1)).ravel()
-      L = Lij.copy(); L.setdiag(d)
-      from scipy.sparse import diags
-      M = diags(np.maximum(A, 1e-12))
+      L = sparse.coo_matrix((vals, (rows, cols)), shape=(n, n)).tocsr()
+      
+      # Diagonal is negative sum of off-diagonals
+      L.setdiag(-np.array(L.sum(axis=1)).ravel())
+      
+      # Mass matrix (lumped area)
+      # Area per vertex is sum of 1/3 area of adjacent faces
+      area_per_face = 0.5 * norm_n
+      M_diag = np.zeros(n)
+      np.add.at(M_diag, F, area_per_face[:, None] / 3.0)
+      M = sparse.diags(np.maximum(M_diag, 1e-12))
+      
       return L, M
   
   def warp_model_biharmonic(self, modelNode, src_corr, dst_corr, lam=1e4):
@@ -1288,15 +1330,20 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     sourcePoints_np = vtk_np.vtk_to_numpy(src_pd.GetPoints().GetData()); targetPoints_np = vtk_np.vtk_to_numpy(tgt_pd.GetPoints().GetData())
     source = t3d.geometry.PointCloud(); source.points = t3d.utility.Vector3dVector(sourcePoints_np)
     target = t3d.geometry.PointCloud(); target.points = t3d.utility.Vector3dVector(targetPoints_np)
+    cov=float(parameters.get("targetCoverage",1.0))
+    cov=float(np.clip(cov, 1e-3, 1.0))
     if skipScaling:
-      size = np.linalg.norm(target.get_max_bound() - target.get_min_bound()); voxel_size = size / (55 * parameters["pointDensity"]) ; source_center = np.zeros(3); target_center = np.zeros(3); source_scaling = target_scaling = 1.0
+      size = np.linalg.norm(target.get_max_bound() - target.get_min_bound())
+      size_eff = size / cov
+      voxel_size = size_eff / (55 * parameters["pointDensity"])
+      source_center = np.zeros(3); target_center = np.zeros(3); source_scaling = target_scaling = 1.0
     else:
       voxel_size = 1.0 / (55 * parameters["pointDensity"]) ; source_center = source.get_center(); target_center = target.get_center()
       tmp_src = copy.deepcopy(source).translate(-source_center); tmp_tgt = copy.deepcopy(target).translate(-target_center)
       sourceSize = np.linalg.norm(tmp_src.get_max_bound() - tmp_src.get_min_bound()); targetSize = np.linalg.norm(tmp_tgt.get_max_bound() - tmp_tgt.get_min_bound())
       source_scaling = 1.0 / sourceSize if sourceSize > 0 else 1.0; target_scaling = 1.0 / targetSize if targetSize > 0 else 1.0
       source.scale(source_scaling, center=source_center); target.scale(target_scaling, center=target_center)
-    source_down, source_fpfh = self.preprocess_point_cloud(source, voxel_size, parameters["normalSearchRadius"], parameters["FPFHSearchRadius"]) 
+    source_down, source_fpfh = self.preprocess_point_cloud(source, voxel_size*cov, parameters["normalSearchRadius"], parameters["FPFHSearchRadius"]) 
     target_down, target_fpfh = self.preprocess_point_cloud(target, voxel_size, parameters["normalSearchRadius"], parameters["FPFHSearchRadius"]) 
     if not skipScaling:
       src_pts = np.asarray(source_down.points); tgt_pts = np.asarray(target_down.points)
@@ -1696,53 +1743,6 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           "norm_b": 0.0
       }
       return np.zeros(k, float), best["T"]
-
-  def _closest_point_on_surface(self, cellLocator, p):
-    # Returns closest point on triangles (not vertices)
-    cp = [0.0, 0.0, 0.0]
-    cid = vtk.reference(0); sid = vtk.reference(0); d2 = vtk.reference(0.0)
-    cellLocator.FindClosestPoint(p, cp, cid, sid, d2)
-    return np.array(cp, dtype=float), float(d2)
-
-  def _knn_graph_laplacian(self, X, k=6, sigma=None):
-      # X: (N,3); returns L (N×N CSR), and degree-normalized weights W_ij
-      from scipy.spatial import cKDTree
-      from scipy import sparse
-      X = np.asarray(X, float)
-      N = X.shape[0]
-      tree = cKDTree(X)
-      d, idx = tree.query(X, k=k+1)          # first neighbor is self
-      idx = idx[:, 1:]; d = d[:, 1:]
-      if sigma is None:
-          sigma = np.median(d[:, -1]) + 1e-12
-      wij = np.exp(-(d**2) / (2.0 * sigma**2))
-      # Build symmetric weight matrix
-      rows = np.repeat(np.arange(N), k)
-      cols = idx.ravel()
-      data = wij.ravel()
-      W = sparse.coo_matrix((data, (rows, cols)), shape=(N, N))
-      # symmetrize
-      W = (W + W.T) * 0.5
-      # Laplacian
-      deg = np.array(W.sum(axis=1)).ravel()
-      L = sparse.diags(deg) - W
-      return L.tocsr(), W.tocsr(), sigma
-
-  def _solve_screened_laplacian(self, A, w_diag, L, lam):
-      # (W + λL) X = W A ; solve per coordinate with spsolve
-      from scipy import sparse
-      from scipy.sparse.linalg import spsolve
-      N = A.shape[0]
-      W = sparse.diags(w_diag, offsets=0, shape=(N, N), format='csr')
-      M = (W + lam * L).tocsr()
-      X = np.zeros_like(A)
-      # Solve for x,y,z independently
-      for c in range(3):
-          rhs = W @ A[:, c]
-          X[:, c] = spsolve(M, rhs)
-      return X
-
-
 
   def _closest_point_on_surface(self, cellLocator, p):
     # Returns closest point on triangles (not vertices)

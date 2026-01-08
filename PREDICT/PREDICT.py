@@ -931,8 +931,6 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       cov = float(parameters.get("targetCoverage", 1.0))
       is_complete = abs(cov - 1.0) < 1e-6   # or: np.isclose(cov, 1.0)
 
-      with_scale = is_complete
-
       pca = AtlasRegistration(
           X=np.asarray(tgt_n),          # scaled target
           Y=np.asarray(src_n),            # mean_shape=None ⇒ Y is the base
@@ -944,7 +942,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           w=float(parameters.get("w", 0.2)),
           tolerance=float(parameters.get("tolerance", 1e-6)),
           max_iterations=int(parameters.get("max_iterations", 120)),
-          with_scale=False,
+          with_scale=is_complete,
           normalize=True                    # << key change
       )
       warped_landmarks, _ = pca.register()

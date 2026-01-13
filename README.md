@@ -4,7 +4,7 @@
 	<img src="logo.png" alt="ATLAS Logo" width="500"/>
 </p>
 
-# ATLAS: Automated Template-based Landmark Alignment System
+# ATLAS: Scaling 3D morphometrics across biodiversity with atlas-based automated landmarking
 
 ATLAS is a companion extension to **SlicerMorph**, focused on high‑fidelity, scalable generation and transfer of 3D anatomical landmarks and dense correspondences using atlas construction, Statistical Shape Models (SSMs), and PCA‑guided deformable registration.
 
@@ -176,6 +176,7 @@ Enable `View > Error Log` in Slicer for stack traces; include logs in Issues.
 
 ---
 *Last updated:* 2025-08-23
+
 
 
 

@@ -469,13 +469,6 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     if itemID == invalid or itemID is None: shNode.CreateItem(self.cloneFolderItemID, mrmlNode)
     else: shNode.SetItemParent(itemID, self.cloneFolderItemID)
 
-  def clearAllRuns(self):
-    shNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLSubjectHierarchyNode")
-    if not shNode: return
-    itemID = shNode.GetItemByName("PREDICT runs")
-    if itemID: shNode.RemoveItem(itemID)
-    self.cloneFolderItemID = None
-
   def clearCloneFolder(self):
     shNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLSubjectHierarchyNode")
     if not shNode: return
@@ -538,9 +531,9 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
         for node in (self.srcTemp, self.corresTemp, self.lmTemp): node.SetAndObserveTransformNodeID(tn.GetID()); slicer.vtkSlicerTransformLogic().hardenTransform(node)
         slicer.mrmlScene.RemoveNode(tn)
     else: self.scale = 1.0
-    self.sourceData, self.targetData, self.sourcePoints, self.targetPoints, self.sourceFeatures, self.targetFeatures, self.voxelSize = \
+    _, _, self.sourcePoints, self.targetPoints, self.sourceFeatures, self.targetFeatures, self.voxelSize = \
       logic.runSubsample(self.srcTemp, self.tgtTemp, self.parameterDictionary.get("skipScaling", False), self.parameterDictionary)
-    if self.sourceData is None:
+    if self.sourcePoints is None or self.targetPoints is None:
       slicer.util.errorDisplay("Subsampling failed. Check input files and logs."); return
     src_np = np.asarray(self.sourcePoints.points); tgt_np = np.asarray(self.targetPoints.points)
     self.sourceSLM_vtk = logic.convertPointsToVTK(src_np); self.targetSLM_vtk = logic.convertPointsToVTK(tgt_np)
@@ -1020,30 +1013,6 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     self._ssm_cache[key] = cached
     return cached
 
-  def warp_node(self, node_to_warp, tree, disp, k=16):
-    if isinstance(node_to_warp, slicer.vtkMRMLModelNode):
-      original_points = slicer.util.arrayFromModelPoints(node_to_warp)
-    elif isinstance(node_to_warp, slicer.vtkMRMLMarkupsFiducialNode):
-      original_points = slicer.util.arrayFromMarkupsControlPoints(node_to_warp)
-    else:
-      logging.error(f"Unsupported node type for in-place warping: {type(node_to_warp)}"); return
-    interpolated_disp = self.interpolate_displacements(original_points, tree, disp, k=k)
-    new_points = original_points + interpolated_disp
-    if isinstance(node_to_warp, slicer.vtkMRMLModelNode):
-      points = node_to_warp.GetPolyData().GetPoints(); vtk_array = points.GetData(); vtk_type = vtk_array.GetDataType() if vtk_array else vtk.VTK_DOUBLE
-      vtk_array_new = vtk_np.numpy_to_vtk(new_points, deep=True, array_type=vtk_type); points.SetData(vtk_array_new); points.Modified(); node_to_warp.GetPolyData().Modified()
-    else:
-      with slicer.util.NodeModify(node_to_warp): slicer.util.updateMarkupsControlPointsFromArray(node_to_warp, new_points)
-
-  def interpolate_displacements(self, verts, tree, disp, k=12, sigma=None):
-      d, idx = tree.query(verts, k=max(4, int(k)))
-      if d.ndim == 1: d = d[:,None]; idx = idx[:,None]
-      if sigma is None:
-          sigma = max(1e-6, float(np.median(d[:, -1])))
-      w = np.exp(-(d**2) / (2.0 * (sigma**2)))
-      w_sum = w.sum(1, keepdims=True); w /= (w_sum + 1e-12)
-      return (disp[idx] * w[..., None]).sum(1)
-
   def smoothPolyData(self, polyData, iterations=8, passBand=0.1):
       f = vtk.vtkWindowedSincPolyDataFilter()
       f.SetInputData(polyData)
@@ -1441,15 +1410,6 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
 
   def convertMatrixToTransformNode(self, matrix, transformName):
     return make_transform_node(matrix, transformName)
-
-  def applyTransform(self, transform_input, polydata):
-    if isinstance(transform_input, slicer.vtkMRMLTransformNode):
-      mat = vtk.vtkMatrix4x4(); transform_input.GetMatrixTransformToParent(mat); M = vtk_mat_to_np(mat)
-    elif isinstance(transform_input, vtk.vtkMatrix4x4):
-      M = vtk_mat_to_np(transform_input)
-    else:
-      raise TypeError("applyTransform expects a vtkMRMLTransformNode or vtkMatrix4x4")
-    return transform_polydata(polydata, M)
 
   def convertPointsToVTK(self, points):
     array_vtk = vtk_np.numpy_to_vtk(points, deep=True, array_type=vtk.VTK_FLOAT)
@@ -1924,13 +1884,6 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       }
       return np.zeros(k, float), best["T"]
 
-  def _closest_point_on_surface(self, cellLocator, p):
-    # Returns closest point on triangles (not vertices)
-    cp = [0.0, 0.0, 0.0]
-    cid = vtk.reference(0); sid = vtk.reference(0); d2 = vtk.reference(0.0)
-    cellLocator.FindClosestPoint(p, cp, cid, sid, d2)
-    return np.array(cp, dtype=float), float(d2)
-
   def _knn_graph_laplacian(self, X, k=6, sigma=None):
       # X: (N,3); returns L (N×N CSR), and degree-normalized weights W_ij
       from scipy.spatial import cKDTree
@@ -1954,21 +1907,6 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       deg = np.array(W.sum(axis=1)).ravel()
       L = sparse.diags(deg) - W
       return L.tocsr(), W.tocsr(), sigma
-
-  def _solve_screened_laplacian(self, A, w_diag, L, lam):
-      # (W + λL) X = W A ; solve per coordinate with spsolve
-      from scipy import sparse
-      from scipy.sparse.linalg import spsolve
-      N = A.shape[0]
-      W = sparse.diags(w_diag, offsets=0, shape=(N, N), format='csr')
-      M = (W + lam * L).tocsr()
-      X = np.zeros_like(A)
-      # Solve for x,y,z independently
-      for c in range(3):
-          rhs = W @ A[:, c]
-          X[:, c] = spsolve(M, rhs)
-      return X
-
 
 
 class PREDICTTest(ScriptedLoadableModuleTest):

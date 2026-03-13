@@ -214,7 +214,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
 
     # write only used_pairs
     wrote = 0
-    ctn = self._ensure_color_table("SEGMENTATION_Colors", int(labels.max()+1))
+    self._ensure_color_table("SEGMENTATION_Colors", int(labels.max()+1))
     for i, (meshPath, mrkPath) in enumerate(used_pairs):
       V, F, pdW = cache[meshPath]
       P = self._load_mrk_positions_world(mrkPath)

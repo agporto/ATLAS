@@ -32,9 +32,6 @@ class DATABASE(ScriptedLoadableModule):
 #
 
 class DATABASELogic(ScriptedLoadableModuleLogic):
-  def __init__(self):
-    self.is_cancelled = False
-
   @staticmethod
   def build_ssm(shapes, variance_threshold=0.99, max_modes=None):
       n_shapes,n_pts,dim=shapes.shape

@@ -355,14 +355,6 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
         return os.path.join(directory, f)
     return None
 
-  def getModelFileByID(self, directory, subjectID):
-    p = self._resolve_by_key(directory, subjectID, ('.ply','.stl','.vtp','.vtk','.obj'))
-    return slicer.util.loadModel(p) if p else None
-
-  def getLandmarkFileByID(self, directory, subjectID):
-    p = self._resolve_by_key(directory, subjectID, ('.mrk.json','.fcsv','.json'))
-    return slicer.util.loadMarkups(p) if p else None
-
   def _list_keys(self, d, ok_exts):
     out={}
     for f in os.listdir(d):

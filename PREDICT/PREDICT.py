@@ -1,4 +1,4 @@
-import os, logging, copy, json, threading, importlib, numpy as np
+import os, logging, copy, json, threading, importlib, time, numpy as np
 import vtk, qt, ctk, slicer
 from slicer.ScriptedLoadableModule import *
 import vtk.util.numpy_support as vtk_np
@@ -30,6 +30,18 @@ def transform_polydata(pd, M):
     tf = vtk.vtkTransformPolyDataFilter(); tf.SetTransform(vtk.vtkTransform())
     tf.GetTransform().SetMatrix(np_to_vtk_mat(as_np4x4(M)))
     tf.SetInputData(pd); tf.Update(); out = vtk.vtkPolyData(); out.DeepCopy(tf.GetOutput()); return out
+
+def clone_polydata_points_only(pd):
+    out = vtk.vtkPolyData()
+    out.ShallowCopy(pd)
+    src_pts = pd.GetPoints()
+    pts = vtk.vtkPoints()
+    src_arr = src_pts.GetData()
+    vtk_type = src_arr.GetDataType() if src_arr else vtk.VTK_FLOAT
+    pts.SetData(vtk_np.numpy_to_vtk(vtk_np.vtk_to_numpy(src_arr).copy(), deep=1, array_type=vtk_type))
+    out.SetPoints(pts)
+    out.GetPoints().Modified()
+    return out
 
 def bounds_diag(node_or_pd):
     pd = node_or_pd if isinstance(node_or_pd, vtk.vtkPolyData) else node_or_pd.GetPolyData()
@@ -154,6 +166,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     {"key":"confidence","kind":"dspin","label":"RANSAC confidence","section":"Rigid registration","min":0.0,"max":1.0,"step":0.001,"value":0.999},
     {"key":"ICPDistanceThreshold","kind":"slider","label":"ICP distance threshold","section":"Rigid registration","min":0.1,"max":2.0,"step":0.1,"value":0.4},
     {"key":"useBiharmonic","kind":"check","label":"Experimental: Use biharmonic surface warp","section":"Deformation backend","value":False},
+    {"key":"bih_lam","kind":"dspin","label":"Biharmonic stiffness (lambda)","section":"Deformation backend","min":1.0,"max":1000000.0,"step":100.0,"value":10000.0},
     {"key":"tpsLambda","kind":"dspin","label":"TPS smoothing (λ)","section":"Deformation backend","min":0.0,"max":10.0,"step":0.01,"value":0.0},
     {"key":"tpsMaxCorr","kind":"spin","label":"TPS max constraints","section":"Deformation backend","min":20,"max":5000,"step":20,"value":800},
     {"key":"alpha","kind":"dspin","label":"Rigidity (alpha)","section":"PCA-CPD registration","min":0.1,"max":10.0,"step":0.1,"value":2.0},
@@ -218,51 +231,93 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
   def setup(self):
     ScriptedLoadableModuleWidget.setup(self)
     tabsWidget = qt.QTabWidget(); self.layout.addWidget(tabsWidget)
-    alignSingleTab=qt.QWidget(); alignMultiTab=qt.QWidget(); advancedSettingsTab=qt.QWidget(); d2Tab=qt.QWidget()
-    tabsWidget.addTab(alignSingleTab, "Single Alignment")
-    tabsWidget.addTab(alignMultiTab, "Batch processing")
-    tabsWidget.addTab(advancedSettingsTab, "Advanced Settings")
+    prepareTab=qt.QWidget(); alignSingleTab=qt.QWidget(); alignMultiTab=qt.QWidget(); d2Tab=qt.QWidget(); advancedSettingsTab=qt.QWidget()
+    tabsWidget.addTab(prepareTab, "Prepare")
+    tabsWidget.addTab(alignSingleTab, "Single Run")
+    tabsWidget.addTab(alignMultiTab, "Batch")
     tabsWidget.addTab(d2Tab, "Template Optimization")
+    tabsWidget.addTab(advancedSettingsTab, "Advanced")
+    prepareLayout = qt.QFormLayout(prepareTab)
     alignSingleTabLayout = qt.QFormLayout(alignSingleTab)
     alignMultiTabLayout  = qt.QFormLayout(alignMultiTab)
-    advancedSettingsTabLayout = qt.QFormLayout(advancedSettingsTab)
     d2Layout = qt.QFormLayout(d2Tab)
+    advancedSettingsTabLayout = qt.QFormLayout(advancedSettingsTab)
+
+    prepInfo = qt.QLabel(
+      "Recommended flow:\n"
+      "1) Ensure a valid SSM table is loaded (from DATABASE)\n"
+      "2) Run Single mode to tune parameters\n"
+      "3) Optionally optimize template\n"
+      "4) Run Batch mode for full dataset"
+    )
+    prepInfo.setWordWrap(True)
+    prepareLayout.addRow(prepInfo)
+    prepButtons = qt.QHBoxLayout()
+    for name in ("DATABASE", "Single Run", "Batch", "Template Optimization"):
+      btn = qt.QPushButton(name)
+      if name == "DATABASE":
+        btn.clicked.connect(lambda: slicer.util.selectModule("DATABASE"))
+      elif name == "Single Run":
+        btn.clicked.connect(lambda: tabsWidget.setCurrentWidget(alignSingleTab))
+      elif name == "Batch":
+        btn.clicked.connect(lambda: tabsWidget.setCurrentWidget(alignMultiTab))
+      else:
+        btn.clicked.connect(lambda: tabsWidget.setCurrentWidget(d2Tab))
+      prepButtons.addWidget(btn)
+    prepareLayout.addRow(prepButtons)
 
     # --- Single Alignment ---
     single=ctk.ctkCollapsibleButton(); single.text="Align and subsample a source and target mesh"; singleL=qt.QFormLayout(single)
     alignSingleTabLayout.addRow(single)
+    self.singlePrereqLabel = qt.QLabel("")
+    self.singlePrereqLabel.setWordWrap(True)
+    singleL.addRow(self.singlePrereqLabel)
     self.sourceModelSelector            = self._make_selector(["vtkMRMLModelNode"]) ; singleL.addRow("Template model:", self.sourceModelSelector)
     self.sourceFiducialSelector         = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; singleL.addRow("Template Correspondences:", self.sourceFiducialSelector)
     self.sourceSparseFiducialSelector   = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; singleL.addRow("Template Landmarks:", self.sourceSparseFiducialSelector)
     self.targetModelSelector            = self._make_selector(["vtkMRMLModelNode"]) ; singleL.addRow("Target model:", self.targetModelSelector)
     self.ssmTableSelector               = self._make_selector(["vtkMRMLTableNode"], attr_key="ssm_eigenvalues", attr_val=None, tooltip="If you have an SSM table loaded, select it here to use PCA-CPD.") ; singleL.addRow("SSM Data Table:", self.ssmTableSelector)
-    self.subsampleButton=qt.QPushButton("Run subsampling"); self.subsampleButton.enabled=False; singleL.addRow(self.subsampleButton)
+    self.subsampleButton=qt.QPushButton("1) Subsample source/target"); self.subsampleButton.enabled=False; singleL.addRow(self.subsampleButton)
     self.subsampleInfo=qt.QPlainTextEdit(); self.subsampleInfo.setPlaceholderText("Subsampling information"); self.subsampleInfo.setReadOnly(True); singleL.addRow(self.subsampleInfo)
-    self.alignButton=qt.QPushButton("Run rigid step"); self.alignButton.enabled=False; singleL.addRow(self.alignButton)
-    self.displayMeshButton=qt.QPushButton("Display alignment"); self.displayMeshButton.enabled=False; singleL.addRow(self.displayMeshButton)
-    self.CPDRegistrationButton=qt.QPushButton("Run deformable step"); self.CPDRegistrationButton.enabled=False; singleL.addRow(self.CPDRegistrationButton)
-    self.displayWarpedModelButton=qt.QPushButton("Show registration"); self.displayWarpedModelButton.enabled=False; singleL.addRow(self.displayWarpedModelButton)
-    self.resetButton=qt.QPushButton("Reset"); singleL.addRow(self.resetButton)
+    self.alignButton=qt.QPushButton("2) Run rigid alignment"); self.alignButton.enabled=False; singleL.addRow(self.alignButton)
+    self.displayMeshButton=qt.QPushButton("2b) Preview Rigid Alignment"); self.displayMeshButton.enabled=False; singleL.addRow(self.displayMeshButton)
+    self.CPDRegistrationButton=qt.QPushButton("3) Run deformable alignment"); self.CPDRegistrationButton.enabled=False; singleL.addRow(self.CPDRegistrationButton)
+    self.displayWarpedModelButton=qt.QPushButton("4) Show final registration"); self.displayWarpedModelButton.enabled=False; singleL.addRow(self.displayWarpedModelButton)
+    self.resetButton=qt.QPushButton("Reset Single Run"); singleL.addRow(self.resetButton)
 
 
     # --- Batch Processing ---
     multi=ctk.ctkCollapsibleButton(); multi.text="Transfer landmark points from a source mesh to a directory of target meshes"; multiL=qt.QFormLayout(multi)
     alignMultiTabLayout.addRow(multi)
+    self.batchPrereqLabel = qt.QLabel("")
+    self.batchPrereqLabel.setWordWrap(True)
+    multiL.addRow(self.batchPrereqLabel)
     self.sourceModelMultiSelector          = self._make_selector(["vtkMRMLModelNode"]) ; multiL.addRow("Source mesh:", self.sourceModelMultiSelector)
     self.sourceFiducialMultiSelector       = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; multiL.addRow("Source Correspondences:", self.sourceFiducialMultiSelector)
     self.sourceSparseFiducialMultiSelector = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; multiL.addRow("Source landmarks:", self.sourceSparseFiducialMultiSelector)
     self.targetModelMultiSelector=ctk.ctkPathLineEdit(); self.targetModelMultiSelector.filters=ctk.ctkPathLineEdit.Dirs; multiL.addRow("Target mesh directory:", self.targetModelMultiSelector)
     self.landmarkOutputSelector=ctk.ctkPathLineEdit(); self.landmarkOutputSelector.filters=ctk.ctkPathLineEdit.Dirs; multiL.addRow("Target output landmark directory:", self.landmarkOutputSelector)
+    self.saveWarpedMeshesBatchChk = qt.QCheckBox("Save warped meshes")
+    self.saveWarpedMeshesBatchChk.setToolTip("Also save the final warped mesh for each target as a .vtp file.")
+    multiL.addRow(self.saveWarpedMeshesBatchChk)
+    self.meshOutputSelector = ctk.ctkPathLineEdit(); self.meshOutputSelector.filters=ctk.ctkPathLineEdit.Dirs; self.meshOutputSelector.enabled=False; multiL.addRow("Warped mesh output directory:", self.meshOutputSelector)
+    self.smoothExportedMeshesBatchChk = qt.QCheckBox("Smooth exported warped meshes")
+    self.smoothExportedMeshesBatchChk.setToolTip("Apply cosmetic smoothing only to the saved mesh files. Landmark predictions are unchanged.")
+    self.smoothExportedMeshesBatchChk.enabled=False
+    multiL.addRow(self.smoothExportedMeshesBatchChk)
     self.ssmTableMultiSelector = self._make_selector(["vtkMRMLTableNode"], attr_key="ssm_eigenvalues", attr_val=None, tooltip="Select the SSM table.", none=False); multiL.addRow("SSM Data Table:", self.ssmTableMultiSelector)
     self.skipOptBatchChk = qt.QCheckBox("Skip template optimization"); self.skipOptBatchChk.setToolTip("Don’t run SSM grid+RANSAC per target before rigid/CPD.");multiL.addRow(self.skipOptBatchChk)
-    self.applyLandmarkMultiButton=qt.QPushButton("Run auto-landmarking"); self.applyLandmarkMultiButton.enabled=False; multiL.addRow(self.applyLandmarkMultiButton)
+    self.applyLandmarkMultiButton=qt.QPushButton("Run Batch Auto-Landmarking"); self.applyLandmarkMultiButton.enabled=False; multiL.addRow(self.applyLandmarkMultiButton)
     self.batchProgress=qt.QProgressBar(); self.batchProgress.minimum=0; self.batchProgress.maximum=100; self.batchProgress.value=0; multiL.addRow("Progress:", self.batchProgress)
-    self.batchCancelButton=qt.QPushButton("Cancel batch"); self.batchCancelButton.enabled=False; multiL.addRow(self.batchCancelButton)
+    self.batchCancelButton=qt.QPushButton("Cancel Batch Run"); self.batchCancelButton.enabled=False; multiL.addRow(self.batchCancelButton)
     self._cancelBatch=False; self.batchCancelButton.connect('clicked()', self.onCancelBatch)
 
 
     # --- Optimization Tab ---
-    opt=ctk.ctkCollapsibleButton(); opt.text="Optimize the template"; optL=qt.QFormLayout(opt); d2Layout.addRow(opt)
+    opt=ctk.ctkCollapsibleButton(); opt.text="Optimization Inputs"; optL=qt.QFormLayout(opt); d2Layout.addRow(opt)
+    self.optimizePrereqLabel = qt.QLabel("")
+    self.optimizePrereqLabel.setWordWrap(True)
+    optL.addRow(self.optimizePrereqLabel)
     self.d2sourceModelSelector          = self._make_selector(["vtkMRMLModelNode"]); optL.addRow("Template model:", self.d2sourceModelSelector)
     self.d2sourceFiducialSelector       = self._make_selector(["vtkMRMLMarkupsFiducialNode"]); optL.addRow("Template Correspondences:", self.d2sourceFiducialSelector)
     self.d2sourceSparseFiducialSelector = self._make_selector(["vtkMRMLMarkupsFiducialNode"]); optL.addRow("Template Landmarks:", self.d2sourceSparseFiducialSelector)
@@ -270,7 +325,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.d2ssmTableSelector             = self._make_selector(["vtkMRMLTableNode"], attr_key="ssm_eigenvalues", attr_val=None); optL.addRow("SSM Data Table:", self.d2ssmTableSelector)
     self.pcGridSteps=qt.QSpinBox(); self.pcGridSteps.minimum=2; self.pcGridSteps.maximum=35; self.pcGridSteps.value=4; self.pcGridSteps.setToolTip("Grid steps per PC"); optL.addRow("Grid steps / PC:", self.pcGridSteps)
     self.ransacItersPerCand=qt.QSpinBox(); self.ransacItersPerCand.minimum=10000; self.ransacItersPerCand.maximum=2000000; self.ransacItersPerCand.singleStep=10000; self.ransacItersPerCand.value=300000; optL.addRow("RANSAC iters (per candidate):", self.ransacItersPerCand)
-    self.optimizeButton=qt.QPushButton("Optimize"); optL.addRow(self.optimizeButton)
+    self.optimizeButton=qt.QPushButton("Run Template Optimization"); optL.addRow(self.optimizeButton)
 
     # --- Optimization Tab (append this) ---
     self.diagText = qt.QPlainTextEdit()
@@ -316,12 +371,18 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.sourceSparseFiducialMultiSelector.currentNodeChanged.connect(self.onSelectMultiProcess)
     self.targetModelMultiSelector.validInputChanged.connect(self.onSelectMultiProcess)
     self.landmarkOutputSelector.validInputChanged.connect(self.onSelectMultiProcess)
+    self.saveWarpedMeshesBatchChk.toggled.connect(self._onBatchMeshExportToggled)
+    self.meshOutputSelector.validInputChanged.connect(self.onSelectMultiProcess)
     self.applyLandmarkMultiButton.clicked.connect(self.onApplyLandmarkMulti)
     self.ssmTableMultiSelector.currentNodeChanged.connect(self.onSelectMultiProcess)
+    self.d2sourceModelSelector.currentNodeChanged.connect(self._enable_optimize)
+    self.d2sourceFiducialSelector.currentNodeChanged.connect(self._enable_optimize)
+    self.d2targetModelSelector.currentNodeChanged.connect(self._enable_optimize)
+    self.d2ssmTableSelector.currentNodeChanged.connect(self._enable_optimize)
 
     self.optimizeButton.clicked.connect(self.onOptimize)
 
-    self.onSelect(); self.parameterDictionary=self._read_params()
+    self.onSelect(); self.onSelectMultiProcess(); self._enable_optimize(); self.parameterDictionary=self._read_params()
     self.layout.addStretch(1)
 
   # ----- Small helpers -----
@@ -336,12 +397,46 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     ready = all([self.sourceModelSelector.currentNode(), self.targetModelSelector.currentNode(),
                  self.sourceFiducialSelector.currentNode(), self.sourceSparseFiducialSelector.currentNode()])
     self.subsampleButton.enabled = ready
+    has_ssm = self.ssmTableSelector.currentNode() is not None
+    if not ready:
+      self.singlePrereqLabel.setText("Status: BLOCKED - select template model, correspondences, sparse landmarks, and target model.")
+    elif not has_ssm:
+      self.singlePrereqLabel.setText("Status: PARTIAL - rigid stage ready; select SSM Data Table to enable deformable stage.")
+    else:
+      self.singlePrereqLabel.setText("Status: READY - all prerequisites for single-run pipeline are available.")
 
   def _enable_batch(self):
+    needs_mesh_output = bool(self.saveWarpedMeshesBatchChk.checked)
     ready = all([self.sourceModelMultiSelector.currentNode(), self.sourceFiducialMultiSelector.currentNode(),
                  self.sourceSparseFiducialMultiSelector.currentNode(), self.ssmTableMultiSelector.currentNode(),
-                 self.targetModelMultiSelector.currentPath, self.landmarkOutputSelector.currentPath])
+                 self.targetModelMultiSelector.currentPath, self.landmarkOutputSelector.currentPath]) and (
+                 (not needs_mesh_output) or bool(self.meshOutputSelector.currentPath))
     self.applyLandmarkMultiButton.enabled = ready
+    if ready:
+      self.batchPrereqLabel.setText("Status: READY - batch prerequisites are satisfied.")
+    elif needs_mesh_output:
+      self.batchPrereqLabel.setText("Status: BLOCKED - select source nodes, SSM table, target directory, landmark output directory, and warped mesh output directory.")
+    else:
+      self.batchPrereqLabel.setText("Status: BLOCKED - select source nodes, SSM table, target directory, and output directory.")
+
+  def _onBatchMeshExportToggled(self, checked):
+    enabled = bool(checked)
+    self.meshOutputSelector.enabled = enabled
+    self.smoothExportedMeshesBatchChk.enabled = enabled
+    self._enable_batch()
+
+  def _enable_optimize(self):
+    ready = all([
+      self.d2sourceModelSelector.currentNode(),
+      self.d2sourceFiducialSelector.currentNode(),
+      self.d2targetModelSelector.currentNode(),
+      self.d2ssmTableSelector.currentNode()
+    ])
+    self.optimizeButton.enabled = ready
+    if ready:
+      self.optimizePrereqLabel.setText("Status: READY - optimization prerequisites are satisfied.")
+    else:
+      self.optimizePrereqLabel.setText("Status: BLOCKED - select template model/correspondences, target model, and SSM table.")
 
   def ensureCloneFolder(self, label=None):
     shNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLSubjectHierarchyNode")
@@ -401,6 +496,13 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     src = self.sourceModelSelector.currentNode(); tgt = self.targetModelSelector.currentNode()
     lm  = self.sourceSparseFiducialSelector.currentNode(); slm = self.sourceFiducialSelector.currentNode()
     self._enable_single()
+    has_table = self.ssmTableSelector.currentNode() is not None
+    if not has_table:
+      self.CPDRegistrationButton.setToolTip("Select an SSM Data Table before running deformable alignment.")
+      if not self.CPDRegistrationButton.enabled:
+        self.CPDRegistrationButton.enabled = False
+    else:
+      self.CPDRegistrationButton.setToolTip("")
     if src: self.sourceModelMultiSelector.setCurrentNode(src)
     if lm: self.sourceSparseFiducialMultiSelector.setCurrentNode(lm)
     if slm: self.sourceFiducialMultiSelector.setCurrentNode(slm)
@@ -466,7 +568,11 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.sourceCloudNode.GetDisplayNode().SetVisibility(False); self.targetCloudNode.GetDisplayNode().SetVisibility(False)
     self.corresTemp.SetAndObserveTransformNodeID(self.ICPTransformNode.GetID()); slicer.vtkSlicerTransformLogic().hardenTransform(self.corresTemp); self.corresTemp.GetDisplayNode().SetVisibility(False)
     self.lmTemp.SetAndObserveTransformNodeID(self.ICPTransformNode.GetID()); slicer.vtkSlicerTransformLogic().hardenTransform(self.lmTemp); self.lmTemp.GetDisplayNode().SetVisibility(True)
-    self.CPDRegistrationButton.enabled = True; self.displayMeshButton.enabled = False
+    has_table = self.ssmTableSelector.currentNode() is not None
+    self.CPDRegistrationButton.enabled = has_table
+    if not has_table:
+      self.CPDRegistrationButton.setToolTip("Select an SSM Data Table before running deformable alignment.")
+    self.displayMeshButton.enabled = False
 
 
   def onCPDRegistration(self):
@@ -476,6 +582,9 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
       alignedSourceLM_np     = slicer.util.arrayFromMarkupsControlPoints(self.lmTemp)
 
       tableNode = self.ssmTableSelector.currentNode()
+      if tableNode is None:
+          slicer.util.errorDisplay("Select an SSM Data Table before running the deformable step.")
+          return
       logic.rigidTransformNode = self.ICPTransformNode
 
       # SSM-guided deformable (PCA-CPD)
@@ -537,6 +646,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
               template=self.warpedMeshNode, model=self.tgtTemp,
               templateLandmarks=self.warpedLM, maxProjectionFactor=proj
           )
+          logic.propagateLandmarkTypes(self.sourceSparseFiducialSelector.currentNode(), self.refinedLM)
           self._parentNode(self.refinedLM)
           self.warpedLM.GetDisplayNode().SetVisibility(False)
           self.refinedLM.GetDisplayNode().SetVisibility(True)
@@ -572,16 +682,34 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
   def onApplyLandmarkMulti(self):
     logic = PREDICTLogic(); projectionFactor = self._proj_frac(); d=self.parameterDictionary
     self._cancelBatch=False; self.batchProgress.setValue(0); self.batchCancelButton.enabled=True
+    last_ui_pump = [0.0]
+    last_status = [0.0]
     def progress_cb(done, total, label=None):
       pct = int(100.0 * done / max(1, total)); self.batchProgress.setValue(pct)
-      if label: slicer.util.showStatusMessage(f"PREDICT batch: {label}", 1500)
-      slicer.app.processEvents()
-    def status_cb(label): slicer.util.showStatusMessage(label, 1500); slicer.app.processEvents()
+      now = time.monotonic()
+      if label and (done == total or (now - last_status[0] >= 0.10)):
+        slicer.util.showStatusMessage(f"PREDICT batch: {label}", 1500)
+        last_status[0] = now
+      if done == total or (now - last_ui_pump[0] >= 0.10):
+        slicer.app.processEvents()
+        last_ui_pump[0] = now
+    def status_cb(label):
+      now = time.monotonic()
+      if now - last_status[0] >= 0.10:
+        slicer.util.showStatusMessage(label, 1500)
+        last_status[0] = now
+      if now - last_ui_pump[0] >= 0.10:
+        slicer.app.processEvents()
+        last_ui_pump[0] = now
     def cancel_cb(): return self._cancelBatch
     qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
     try:
-      self.parameterDictionary["opt_pcGridSteps"] = int(self.pcGridSteps.value)
-      self.parameterDictionary["opt_ransac_per_cand"] = int(self.ransacItersPerCand.value)
+      batchParameters = dict(self.parameterDictionary)
+      batchParameters["opt_pcGridSteps"] = int(self.pcGridSteps.value)
+      batchParameters["opt_ransac_per_cand"] = int(self.ransacItersPerCand.value)
+      saveWarpedMeshes = bool(self.saveWarpedMeshesBatchChk.checked)
+      meshOutputDir = self.meshOutputSelector.currentPath if saveWarpedMeshes else ""
+      smoothExportedMesh = bool(self.smoothExportedMeshesBatchChk.checked)
 
       logic.runLandmarkBatch(
         sourceModelNode=self.sourceModelMultiSelector.currentNode(),
@@ -591,8 +719,11 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
         outputDir=self.landmarkOutputSelector.currentPath,
         skipScaling=d.get("skipScaling", False),
         projectionFactor=projectionFactor,
-        parameters=self.parameterDictionary,
+        parameters=batchParameters,
         tableNode=self.ssmTableMultiSelector.currentNode(),
+        saveWarpedMeshes=saveWarpedMeshes,
+        meshOutputDir=meshOutputDir,
+        smoothExportedMesh=smoothExportedMesh,
         progress_callback=progress_cb,
         status_callback=status_cb,
         cancel_callback=cancel_cb
@@ -679,17 +810,33 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
 # ---------- Logic ----------
 class PREDICTLogic(ScriptedLoadableModuleLogic):
-  def __init__(self): super().__init__(); self.rigidTransformNode=None
+  def __init__(self):
+    super().__init__()
+    self.rigidTransformNode=None
+    self._ssm_cache={}
 
-  def runLandmarkBatch(self, sourceModelNode, sourceCorrNode, sourceLMNode, targetModelDir, outputDir, skipScaling, projectionFactor, parameters, tableNode, progress_callback=None, status_callback=None, cancel_callback=None):
+  def runLandmarkBatch(self, sourceModelNode, sourceCorrNode, sourceLMNode, targetModelDir, outputDir, skipScaling, projectionFactor, parameters, tableNode, saveWarpedMeshes=False, meshOutputDir="", smoothExportedMesh=False, progress_callback=None, status_callback=None, cancel_callback=None):
     import tiny3d as t3d
     t3d.utility.random.seed(int(42))
     skipOpt = bool(parameters.get("skipOptimization", False))
+    use_bih = bool(parameters.get("useBiharmonic", False))
+    lam_bih = float(parameters.get("bih_lam", 1e4))
+    lam_tps = float(parameters.get("tpsLambda", 0.0))
+    max_corr = int(parameters.get("tpsMaxCorr", 800))
+    projection_enabled = bool(projectionFactor and projectionFactor > 0)
+    need_final_mesh = bool(saveWarpedMeshes or projection_enabled)
+    need_runtime_nodes = bool(need_final_mesh or use_bih)
+    need_template_nodes = bool((not skipOpt) or need_runtime_nodes)
+    ssmData = self._get_ssm_base(tableNode) if tableNode is not None else None
 
     if tableNode is None: raise ValueError("Batch requires an SSM table.")
     if sourceCorrNode is None: raise ValueError("Batch requires template correspondences.")
     if sourceLMNode   is None: raise ValueError("Batch requires template landmarks.")
     os.makedirs(outputDir, exist_ok=True)
+    if saveWarpedMeshes:
+      if not meshOutputDir:
+        raise ValueError("Batch mesh export requires a warped mesh output directory.")
+      os.makedirs(meshOutputDir, exist_ok=True)
     targets=[f for f in os.listdir(targetModelDir) if f.lower().endswith((".ply",".vtp",".vtk",".stl",".obj"))]
     total=len(targets); done=0
     if total==0:
@@ -701,12 +848,6 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     except Exception:
       prev_render = False
     app.setRenderPaused(True); scene=slicer.mrmlScene; scene.StartState(slicer.vtkMRMLScene.BatchProcessState)
-    def _all_node_ids(): return set(n.GetID() for n in slicer.util.getNodes('*').values())
-    def _remove_nodes_by_ids(ids):
-      for n in list(slicer.util.getNodes('*').values()):
-        try:
-          if n.GetID() in ids: scene.RemoveNode(n)
-        except: pass
     def _apply_pd_transform(pd, T): return transform_polydata(pd, T)
     def _mat4(M): return as_np4x4(M)
     def _apply_M_to_np(P, M4): P=np.asarray(P, np.float32); M4=_mat4(M4); Ph=np.c_[P, np.ones((len(P),1), np.float32)]; return (Ph @ M4.T)[:, :3]
@@ -725,9 +866,8 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     try:
       if progress_callback: progress_callback(0, total, "Starting…")
       for i,fname in enumerate(targets):
-        baseline_ids = _all_node_ids()
         if cancel_callback and cancel_callback(): logging.info("Batch cancel requested."); break
-        tgt_node = icpNode = pred_node = None
+        tgt_node = pred_node = None
         try:
           tgt_path=os.path.join(targetModelDir,fname)
           if status_callback: status_callback(f"[{i+1}/{total}] Load target")
@@ -735,14 +875,19 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           if tgt_node is None or tgt_node.GetPolyData() is None: raise RuntimeError(f"Failed to load: {tgt_path}")
           dn=tgt_node.GetDisplayNode(); 
           if dn: dn.SetVisibility(False)
-          pd=vtk.vtkPolyData(); pd.DeepCopy(tpl_model_orig); tpl_model.SetAndObservePolyData(pd)
-          with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, tpl_corr_orig)
-          with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   tpl_lm_orig)
+          tpl_model.SetAndObservePolyData(clone_polydata_points_only(tpl_model_orig))
+          corr_np = tpl_corr_orig.copy()
+          lm_np = tpl_lm_orig.copy()
+          if need_template_nodes:
+            with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, corr_np)
+            with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   lm_np)
           if not skipOpt:
             if status_callback: status_callback(f"[{i+1}/{total}] Optimize (SSM+RANSAC)…")
             k = int(parameters.get("opt_pcGridSteps", 4))
             rper = int(parameters.get("opt_ransac_per_cand", 300000))
-            _b,_T=self.initialize_template(tableNode, tpl_model, tpl_corr, tpl_lm, tgt_node, parameters=parameters, k=k, span=3.0, optimizer="powell", max_evals=240, eval_ransac_iters=int(0.2 * rper), final_ransac_iters=rper, seed=0)
+            _b,_T=self.initialize_template(tableNode, tpl_model, tpl_corr, tpl_lm, tgt_node, parameters=parameters, k=k, span=3.0, optimizer="powell", max_evals=240, eval_ransac_iters=int(0.2 * rper), final_ransac_iters=rper, seed=0, ssmData=ssmData)
+            corr_np = slicer.util.arrayFromMarkupsControlPoints(tpl_corr).astype(np.float32, copy=True)
+            lm_np   = slicer.util.arrayFromMarkupsControlPoints(tpl_lm).astype(np.float32, copy=True)
           else:
             if status_callback: status_callback(f"[{i+1}/{total}] Skip optimization")
           b_src=np.array(tpl_model.GetPolyData().GetBounds()).reshape(3,2); b_tgt=np.array(tgt_node.GetPolyData().GetBounds()).reshape(3,2)
@@ -757,30 +902,30 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           else:
             s=1.0
             Ms=np.eye(4, dtype=np.float32)
-          corr_np=_apply_M_to_np(slicer.util.arrayFromMarkupsControlPoints(tpl_corr), Ms)
-          lm_np  =_apply_M_to_np(slicer.util.arrayFromMarkupsControlPoints(tpl_lm),   Ms)
-          with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, corr_np)
-          with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   lm_np)
+          corr_np=_apply_M_to_np(corr_np, Ms)
+          lm_np  =_apply_M_to_np(lm_np,   Ms)
+          if need_runtime_nodes:
+            with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, corr_np)
+            with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   lm_np)
           if cancel_callback and cancel_callback(): raise KeyboardInterrupt("Cancel requested")
           if status_callback: status_callback(f"[{i+1}/{total}] Subsample & features…")
           _src_pc,_tgt_pc,src_down,tgt_down,src_fpfh,tgt_fpfh,voxel=self.runSubsample(tpl_model, tgt_node, skipScaling, parameters)
           if status_callback: status_callback(f"[{i+1}/{total}] RANSAC+ICP rigid…")
           M_icp=_mat4(self.estimateTransform(src_down, tgt_down, src_fpfh, tgt_fpfh, voxel, parameters))
-          tpl_model.SetAndObservePolyData(_apply_pd_transform(tpl_model.GetPolyData(), M_icp))
+          if need_final_mesh or use_bih:
+            tpl_model.SetAndObservePolyData(_apply_pd_transform(tpl_model.GetPolyData(), M_icp))
           corr_np=_apply_M_to_np(corr_np, M_icp); lm_np=_apply_M_to_np(lm_np, M_icp)
-          with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, corr_np)
-          with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   lm_np)
-          icpNode = make_transform_node(M_icp, '_tmp_icp'); icpNode.SetAttribute('fastmorph.temp','1')
-          self.rigidTransformNode = icpNode
+          if need_runtime_nodes:
+            with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, corr_np)
+            with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   lm_np)
           if cancel_callback and cancel_callback(): raise KeyboardInterrupt("Cancel requested")
           if status_callback: status_callback(f"[{i+1}/{total}] PCA-CPD deformable…")
           aligned_corr=corr_np
-          deformed_corr=self.runDeformable(tableNode=tableNode, sourceLM=aligned_corr, scale=s, targetSLM=np.asarray(tgt_down.points), parameters=parameters)
+          deformed_corr=self.runDeformable(tableNode=tableNode, sourceLM=aligned_corr, scale=s, targetSLM=np.asarray(tgt_down.points), parameters=parameters, rigidMatrix=M_icp, ssmData=ssmData)
           if cancel_callback and cancel_callback(): raise KeyboardInterrupt("Cancel requested")
-          use_bih = bool(parameters.get("useBiharmonic", False))
+          pred_np = None
           if use_bih:
               try:
-                  lam_bih = float(parameters.get("bih_lam", 1e4))
                   V0, V1, F = self.warp_model_biharmonic(
                       modelNode=tpl_model,
                       src_corr=aligned_corr,
@@ -791,38 +936,47 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
                       self.warp_markups_barycentric(tpl_lm, V0, V1, F)
               except Exception as e:
                   logging.warning(f"[batch] Biharmonic failed; falling back to TPS. Reason: {e}")
-                  lam_tps  = float(parameters.get("tpsLambda", 0.0))
-                  max_corr = int(parameters.get("tpsMaxCorr", 800))
-                  self.warp_model_tps(tpl_model, aligned_corr, deformed_corr, lam=lam_tps, max_corr=max_corr, seed=0, landmarksNode=tpl_lm)
-          else:
-              lam_tps  = float(parameters.get("tpsLambda", 0.0))
-              max_corr = int(parameters.get("tpsMaxCorr", 800))
+                  if need_final_mesh:
+                    self.warp_model_tps(tpl_model, aligned_corr, deformed_corr, lam=lam_tps, max_corr=max_corr, seed=0, landmarksNode=tpl_lm)
+                  else:
+                    pred_np = self.warp_points_tps(lm_np, aligned_corr, deformed_corr, lam=lam_tps, max_corr=max_corr, seed=0).astype(np.float32, copy=False)
+          elif need_final_mesh:
               self.warp_model_tps(tpl_model, aligned_corr, deformed_corr, lam=lam_tps, max_corr=max_corr, seed=0, landmarksNode=tpl_lm)
+          else:
+              pred_np = self.warp_points_tps(lm_np, aligned_corr, deformed_corr, lam=lam_tps, max_corr=max_corr, seed=0).astype(np.float32, copy=False)
 
-          if projectionFactor and projectionFactor>0:
+          if projection_enabled:
             if status_callback: status_callback(f"[{i+1}/{total}] Project to surface…")
             pred_node=self.runPointProjection(tpl_model, tgt_node, tpl_lm, projectionFactor)
             self.propagateLandmarkTypes(sourceLMNode, pred_node)
             pred_np=slicer.util.arrayFromMarkupsControlPoints(pred_node).astype(np.float32,copy=False)
-          else:
+          elif pred_np is None:
             self.propagateLandmarkTypes(sourceLMNode, tpl_lm)
             pred_np=slicer.util.arrayFromMarkupsControlPoints(tpl_lm).astype(np.float32,copy=False)
-          root=os.path.splitext(fname)[0]; out_path=os.path.join(outputDir, root+".mrk.json")
+          root=os.path.splitext(fname)[0]
+          if saveWarpedMeshes:
+            if status_callback: status_callback(f"[{i+1}/{total}] Save warped mesh…")
+            mesh_pd = tpl_model.GetPolyData()
+            if mesh_pd.GetNumberOfPoints() == 0:
+              raise RuntimeError("Warped mesh is empty; cannot save batch mesh output.")
+            if smoothExportedMesh:
+              mesh_pd = self.smoothPolyData(mesh_pd)
+            self.savePolyDataVTP(mesh_pd, os.path.join(meshOutputDir, root + ".vtp"))
+          out_path=os.path.join(outputDir, root+".mrk.json")
           if status_callback: status_callback(f"[{i+1}/{total}] Save landmarks…")
-          with slicer.util.NodeModify(save_scratch): slicer.util.updateMarkupsControlPointsFromArray(save_scratch, pred_np)
+          with slicer.util.NodeModify(save_scratch):
+            slicer.util.updateMarkupsControlPointsFromArray(save_scratch, pred_np)
+          self.propagateLandmarkTypes(sourceLMNode, save_scratch)
           slicer.util.saveNode(save_scratch, out_path)
         except KeyboardInterrupt:
           logging.info(f"[batch] Cancelled during {fname}"); raise
         except Exception as e:
           logging.error(f"[batch] Failed on {fname}: {e}")
         finally:
-          for n in (pred_node, tgt_node, icpNode):
+          for n in (pred_node, tgt_node):
             if n:
               try: scene.RemoveNode(n)
               except: pass
-          self.rigidTransformNode = None
-          after_ids = _all_node_ids(); stray_ids = after_ids - baseline_ids
-          if stray_ids: _remove_nodes_by_ids(stray_ids)
           done += 1
           if progress_callback: progress_callback(done,total,f"Done {done}/{total}")
       if status_callback and done==total: status_callback("Batch processing complete.")
@@ -834,7 +988,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       logging.exception("Batch crashed.")
       if status_callback: status_callback(f"Batch error: {e}")
     finally:
-      for n in (tpl_model, tpl_corr, tpl_lm, save_scratch, getattr(self, 'rigidTransformNode', None)):
+      for n in (tpl_model, tpl_corr, tpl_lm, save_scratch):
         if n:
           try: scene.RemoveNode(n)
           except: pass
@@ -849,6 +1003,22 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     arr = np.zeros((n_rows, n_cols), dtype=float)
     for j in range(n_cols): name = vtk_table.GetColumn(j).GetName(); arr[:, j] = slicer.util.arrayFromTableColumn(tableNode, name)
     return arr
+
+  def _get_ssm_base(self, tableNode):
+    if tableNode is None:
+      raise ValueError("SSM cache requires a table node.")
+    key = tableNode.GetID()
+    cached = self._ssm_cache.get(key)
+    if cached is not None:
+      return cached
+    A = self._tableToArray(tableNode)
+    mean = A[:,0].reshape(-1, 3)
+    U = A[:,1:].reshape(mean.shape[0], 3, -1)
+    eig = np.array(json.loads(tableNode.GetAttribute("ssm_eigenvalues")), float)
+    eig[eig < 1e-10] = 1e-10
+    cached = {"flat": A, "mean": mean, "U": U, "eig": eig}
+    self._ssm_cache[key] = cached
+    return cached
 
   def warp_node(self, node_to_warp, tree, disp, k=16):
     if isinstance(node_to_warp, slicer.vtkMRMLModelNode):
@@ -874,31 +1044,41 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       w_sum = w.sum(1, keepdims=True); w /= (w_sum + 1e-12)
       return (disp[idx] * w[..., None]).sum(1)
 
-  def smoothModel(self, modelNode, iterations=8, passBand=0.1):
+  def smoothPolyData(self, polyData, iterations=8, passBand=0.1):
       f = vtk.vtkWindowedSincPolyDataFilter()
-      f.SetInputData(modelNode.GetPolyData())
+      f.SetInputData(polyData)
       f.SetNumberOfIterations(iterations)
-      f.SetPassBand(passBand)      # slightly higher pass band
+      f.SetPassBand(passBand)
       f.BoundarySmoothingOn()
       f.FeatureEdgeSmoothingOff()
       f.NormalizeCoordinatesOff()
       f.Update()
-      modelNode.SetAndObservePolyData(f.GetOutput())
+      out = vtk.vtkPolyData(); out.DeepCopy(f.GetOutput())
+      return out
 
-  def runDeformable(self, tableNode, sourceLM, scale, targetSLM, parameters):
+  def smoothModel(self, modelNode, iterations=8, passBand=0.1):
+      modelNode.SetAndObservePolyData(self.smoothPolyData(modelNode.GetPolyData(), iterations=iterations, passBand=passBand))
+
+  def savePolyDataVTP(self, polyData, outputPath):
+      writer = vtk.vtkXMLPolyDataWriter()
+      writer.SetFileName(outputPath)
+      writer.SetInputData(polyData)
+      if writer.Write() != 1:
+          raise RuntimeError(f"Failed to save warped mesh: {outputPath}")
+
+  def runDeformable(self, tableNode, sourceLM, scale, targetSLM, parameters, rigidMatrix=None, ssmData=None):
       from biocpd.atlas_registration import AtlasRegistration
       from biocpd.deformable_registration import DeformableRegistration
       if tableNode is None: raise ValueError("runDeformable requires tableNode to be set")
 
       # Keep SSM geometry consistent with the (already scaled) sourceLM
-      flat = self._tableToArray(tableNode) #* float(scale)
-      M = flat.shape[0] // 3
+      ssmData = self._get_ssm_base(tableNode) if ssmData is None else ssmData
+      M = ssmData["mean"].shape[0]
       if M != sourceLM.shape[0]:
           raise ValueError(f"SSM table has {M} points but sourceLM has {sourceLM.shape[0]}")
       
-      modes = flat[:, 1:].reshape(M, 3, -1)
-
-      eig = np.array(json.loads(tableNode.GetAttribute("ssm_eigenvalues")), float)
+      modes = ssmData["U"]
+      eig = ssmData["eig"]
 
       variance_keep = float(parameters.get("variance_keep", 0.95))
       total = eig.sum()
@@ -914,10 +1094,14 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       eigvals_eff = eig[:k]#* (scale ** 2)  
 
       # Rigid rotation for the modes
-      if self.rigidTransformNode is None:
-          raise ValueError("runDeformable requires that logic.rigidTransformNode be set")
-      mat = vtk.vtkMatrix4x4(); self.rigidTransformNode.GetMatrixTransformToParent(mat)
-      T = vtk_mat_to_np(mat); R = T[:3, :3]
+      if rigidMatrix is None:
+          if self.rigidTransformNode is None:
+              raise ValueError("runDeformable requires either rigidMatrix or logic.rigidTransformNode to be set")
+          mat = vtk.vtkMatrix4x4(); self.rigidTransformNode.GetMatrixTransformToParent(mat)
+          T = vtk_mat_to_np(mat)
+      else:
+          T = as_np4x4(rigidMatrix)
+      R = T[:3, :3]
 
       U_aligned = np.einsum('ij,pjk->pik', R, modes).reshape(3*M, -1)
 
@@ -1213,6 +1397,10 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           out[s:e] = K @ W + Pi @ A
       return out
 
+  def warp_points_tps(self, points, src_corr, dst_corr, lam=0.0, max_corr=800, seed=0):
+      src_used, W, A = self._tps_fit_3d(src_corr, dst_corr, lam=lam, max_corr=max_corr, seed=seed)
+      return self._tps_eval_3d(points, src_used, W, A)
+
   def _fit_affine(self, P, Q):
       """Return 4×3 affine that maps P→Q in least squares: [P 1] A = Q."""
       P = np.asarray(P, np.float64); Q = np.asarray(Q, np.float64)
@@ -1303,7 +1491,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       t3d.pipelines.registration.RANSACConvergenceCriteria(parameters["maxRANSAC"], confidence=parameters["confidence"]))
     no_scaling_eval = t3d.pipelines.registration.evaluate_registration(targetPoints, sourcePoints, distanceThreshold, np.linalg.inv(no_scaling.transformation))
     best_result=no_scaling; fitness=(no_scaling.fitness + no_scaling_eval.fitness)/2
-    count=0; maxAttempts=10
+    count=0; maxAttempts=20
     try:
       while fitness < 0.99 and count < maxAttempts:
         result = t3d.pipelines.registration.registration_ransac_based_on_feature_matching(
@@ -1377,16 +1565,8 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       maxProjection = np.linalg.norm(bb[:,1] - bb[:,0]) * maxProjectionFactor
 
       templatePoints = self.getFiducialPoints(templateLandmarks)
-      normalFilter = vtk.vtkPolyDataNormals()
-      normalFilter.SetInputData(template.GetPolyData())
-      normalFilter.ComputePointNormalsOn()
-      normalFilter.SplittingOff()
-      normalFilter.Update()
-      sourcePolydata = normalFilter.GetOutput()
-
-      # --- new coherent projection ---
       projectedPointsPD = self.projectPointsPolydataCoherent(
-          sourcePolydata, model.GetPolyData(), templatePoints, rayLength=maxProjection,
+          model.GetPolyData(), templatePoints, rayLength=maxProjection,
           k_neighbors=6, lambda_cohere=2.0, snap_to_surface=True
       )
 
@@ -1407,7 +1587,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     for i in range(fiducialNode.GetNumberOfControlPoints()): points.InsertNextPoint(fiducialNode.GetNthControlPointPosition(i))
     return points
 
-  def projectPointsPolydataCoherent(self, sourcePolydata, targetPolydata, originalPoints, rayLength, k_neighbors=6, lambda_cohere=2.0, snap_to_surface=True, surface_tol=5e-4, outward_eps=1e-3, use_outer_surface=True):
+  def projectPointsPolydataCoherent(self, targetPolydata, originalPoints, rayLength, k_neighbors=6, lambda_cohere=2.0, snap_to_surface=True, surface_tol=5e-4, outward_eps=1e-3, use_outer_surface=True):
       # --- target prep (single outer skin + normals + SDF) ---
       def _outer(pd):
           if not use_outer_surface: return pd
@@ -1421,7 +1601,6 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       nrm.ComputeCellNormalsOn(); nrm.ComputePointNormalsOff(); nrm.Update(); tgt=nrm.GetOutput()
       cellLoc=vtk.vtkStaticCellLocator(); cellLoc.SetDataSet(tgt); cellLoc.BuildLocator()
       sdf=vtk.vtkImplicitPolyDataDistance(); sdf.SetInput(tgt)
-      cellN=tgt.GetCellData().GetNormals()
       B=np.array(tgt.GetBounds(),float).reshape(3,2); diag=float(np.linalg.norm(B[:,1]-B[:,0]))+1e-12
       tol=float(surface_tol)*diag; eps=float(outward_eps)*diag; maxmove=float(rayLength)*1.0  # rayLength is already in “diag” units in your UI
 
@@ -1482,22 +1661,20 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       out=vtk.vtkPolyData(); out.SetPoints(pts); return out
 
 
-  def _ssm_unpack(self, tableNode, drop_modes=None):
-    A   = self._tableToArray(tableNode)
-    mean= A[:,0]; U = A[:,1:]; M = mean.size//3; mean= mean.reshape(M,3); U = U.reshape(M,3,-1)
-    eig = np.array(json.loads(tableNode.GetAttribute("ssm_eigenvalues")), float)
-    eig[eig<1e-10]=1e-10
+  def _ssm_unpack(self, tableNode, drop_modes=None, ssmData=None):
+    base = self._get_ssm_base(tableNode) if ssmData is None else ssmData
+    mean = base["mean"]; U = base["U"]; eig = base["eig"]
     if drop_modes:
       keep = [i for i in range(U.shape[2]) if i not in set(drop_modes)]; U = U[:,:,keep]; eig = eig[keep]
     return mean, U, eig
 
   def initialize_template(self, tableNode, srcModelNode, srcCorrNode, srcLmNode, tgtModelNode, parameters,
                           k=10, span=2.5, optimizer="powell", max_evals=240,
-                          eval_ransac_iters=50000, final_ransac_iters=200000, seed=0):
+                          eval_ransac_iters=50000, final_ransac_iters=200000, seed=0, ssmData=None):
       import numpy as np, tiny3d as t3d
       self.last_opt_info = None
 
-      mean, U, eig = self._ssm_unpack(tableNode)
+      mean, U, eig = self._ssm_unpack(tableNode, ssmData=ssmData)
       k = int(min(k, U.shape[2])); k_eff = max(1, k)
       eig_k = eig[:k]; sqrt_eig_k = np.sqrt(eig_k)
       M = mean.shape[0]
@@ -1575,7 +1752,11 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       # -------------------------
       # 2) Candidate search (unchanged logic, but seeded by baseline)
       # -------------------------
+      feat_cache = {}
       def get_feat(b, coarse):
+          key = (tuple(np.round(np.asarray(b, float), 6)), bool(coarse))
+          if key in feat_cache:
+              return feat_cache[key]
           pts = ssm_sample(b)
           # optional candidate thinning for coarse stage
           max_pts_cand_coarse = int(parameters.get("maxFeatPtsCoarse", 1800))
@@ -1583,7 +1764,8 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
               rng = np.random.default_rng(seed)
               idx = rng.choice(len(pts), size=max_pts_cand_coarse, replace=False)
               pts = pts[idx]
-          return _get_feat_from_points(pts, coarse)
+          feat_cache[key] = _get_feat_from_points(pts, coarse)
+          return feat_cache[key]
 
       def eval_bestof(b, iters, coarse, nrestarts):
           itp = max(4, int(iters // max(1, nrestarts)))

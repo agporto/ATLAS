@@ -280,19 +280,22 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     ScriptedLoadableModuleWidget.setup(self)
 
     # --- DB ---
-    dbWidget = ctk.ctkCollapsibleButton(); dbWidget.text = "Shape Modeling Database"
+    dbWidget = ctk.ctkCollapsibleButton(); dbWidget.text = "1) Database Library"; dbWidget.collapsed = False
     dbLayout = qt.QFormLayout(dbWidget); self.layout.addWidget(dbWidget)
     self.databasePathSelector = ctk.ctkPathLineEdit(); self.databasePathSelector.filters = ctk.ctkPathLineEdit.Dirs
     dbLayout.addRow("Database Location:", self.databasePathSelector)
     self.databaseListWidget = qt.QListWidget()
-    self.loadDbButton = qt.QPushButton("Load Selected"); self.loadDbButton.setIcon(slicer.app.style().standardIcon(qt.QStyle.SP_ArrowUp)); self.loadDbButton.enabled = False
-    self.removeDbButton = qt.QPushButton("Remove Selected"); self.removeDbButton.setIcon(slicer.app.style().standardIcon(qt.QStyle.SP_TrashIcon)); self.removeDbButton.enabled = False
+    self.loadDbButton = qt.QPushButton("Load Selected Database"); self.loadDbButton.setIcon(slicer.app.style().standardIcon(qt.QStyle.SP_ArrowUp)); self.loadDbButton.enabled = False
+    self.removeDbButton = qt.QPushButton("Remove Selected Database"); self.removeDbButton.setIcon(slicer.app.style().standardIcon(qt.QStyle.SP_TrashIcon)); self.removeDbButton.enabled = False
     listButtonLayout = qt.QVBoxLayout(); listButtonLayout.addWidget(self.loadDbButton); listButtonLayout.addWidget(self.removeDbButton)
     listLayout = qt.QHBoxLayout(); listLayout.addWidget(self.databaseListWidget); listLayout.addLayout(listButtonLayout)
     dbLayout.addRow("Available Databases:", listLayout)
 
-    ingestWidget = ctk.ctkCollapsibleButton(); ingestWidget.text = "Ingest SSM"
+    ingestWidget = ctk.ctkCollapsibleButton(); ingestWidget.text = "2) Ingest New SSM"; ingestWidget.collapsed = True
     ingestLayout = qt.QFormLayout(ingestWidget); self.layout.addWidget(ingestWidget)
+    ingestHelp = qt.QLabel("Use this section to create a new database from atlas artifacts and population correspondences.")
+    ingestHelp.setWordWrap(True)
+    ingestLayout.addRow(ingestHelp)
     self.ssmTemplateModelSelector = ctk.ctkPathLineEdit(); self.ssmTemplateModelSelector.filters = ctk.ctkPathLineEdit.Files; self.ssmTemplateModelSelector.nameFilters=["*.ply","*.vtk","*.vtp","*.stl"]
     self.ssmTemplateLandmarksSelector = ctk.ctkPathLineEdit(); self.ssmTemplateLandmarksSelector.filters = ctk.ctkPathLineEdit.Files; self.ssmTemplateLandmarksSelector.nameFilters=["*.json","*.fcsv"]
     self.ssmSparseLandmarksSelector = ctk.ctkPathLineEdit(); self.ssmSparseLandmarksSelector.filters = ctk.ctkPathLineEdit.Files; self.ssmSparseLandmarksSelector.nameFilters=["*.json","*.fcsv"]
@@ -303,13 +306,23 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     ingestLayout.addRow("Sparse Landmarks:", self.ssmSparseLandmarksSelector)
     ingestLayout.addRow("Population Correspondences Folder:", self.ssmPopulationDirSelector)
     ingestLayout.addRow("New Database Name:", self.ssmNameEditor)
+    self.ingestStatusLabel = qt.QLabel("")
+    self.ingestStatusLabel.setWordWrap(True)
+    ingestLayout.addRow(self.ingestStatusLabel)
     self.ingestButton = qt.QPushButton("Ingest into Database"); self.ingestButton.enabled = False
     ingestLayout.addRow(self.ingestButton)
 
     # --- Visualization ---
-    explorerWidget = ctk.ctkCollapsibleButton(); explorerWidget.text = "SSM Visualization"
+    explorerWidget = ctk.ctkCollapsibleButton(); explorerWidget.text = "3) SSM Explorer (Template-Centered)"
+    explorerWidget.collapsed = False
     explorerLayout = qt.QFormLayout(explorerWidget); self.layout.addWidget(explorerWidget)
     explorerLayout.setFieldGrowthPolicy(qt.QFormLayout.AllNonFixedFieldsGrow)
+    explorerHelp = qt.QLabel(
+      "Template-centered exploration: PC sliders apply offsets around the loaded template correspondences.\n"
+      "Use this to inspect variation while preserving template alignment context."
+    )
+    explorerHelp.setWordWrap(True)
+    explorerLayout.addRow(explorerHelp)
 
     self.explorerModelSelector = slicer.qMRMLNodeComboBox()
     self.explorerModelSelector.nodeTypes = ["vtkMRMLModelNode"]
@@ -328,8 +341,8 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     self.explorerLandmarksSelector.removeEnabled = False
     self.explorerLandmarksSelector.noneEnabled = True
     self.explorerLandmarksSelector.setMRMLScene(slicer.mrmlScene)
-    self.explorerLandmarksSelector.setToolTip("Select the correspondences that control the deformation.")
-    explorerLayout.addRow("Dense Correspondences:", self.explorerLandmarksSelector)
+    self.explorerLandmarksSelector.setToolTip("Select the dense correspondence landmarks that control deformation.")
+    explorerLayout.addRow("Dense Correspondence Landmarks:", self.explorerLandmarksSelector)
 
     self.explorerTableSelector = slicer.qMRMLNodeComboBox()
     self.explorerTableSelector.nodeTypes = ["vtkMRMLTableNode"]
@@ -347,7 +360,7 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     self.methodCombo.setCurrentIndex(0)
     explorerLayout.addRow("Deformation Method:", self.methodCombo)
 
-    self.numPCSpin = qt.QSpinBox(); self.numPCSpin.setMinimum(1); self.numPCSpin.setMaximum(1); self.numPCSpin.setValue(2)
+    self.numPCSpin = qt.QSpinBox(); self.numPCSpin.setMinimum(1); self.numPCSpin.setMaximum(1); self.numPCSpin.setValue(1)
     explorerLayout.addRow("Number of PC sliders:", self.numPCSpin)
 
     # Sliders area — larger and expanding
@@ -362,8 +375,8 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     self.slidersArea.setWidget(self.slidersWidget)
     explorerLayout.addRow(self.slidersArea)
 
-    self.resetButton = qt.QPushButton("Reset All PCs")
-    self.resetButton.toolTip = "Reset all sliders to zero to show the mean shape."
+    self.resetButton = qt.QPushButton("Reset Explorer PCs")
+    self.resetButton.toolTip = "Reset all sliders to zero and restore the loaded template-centered baseline."
     self.resetButton.enabled = False
     explorerLayout.addRow(self.resetButton)
 
@@ -437,6 +450,19 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
       dbName = currentItem.text()
       dbPath = os.path.join(self.databasePathSelector.currentPath, dbName)
 
+      before_model = set()
+      before_lm = set()
+      before_table = set()
+      try:
+        col = slicer.mrmlScene.GetNodesByClass("vtkMRMLModelNode"); col.UnRegister(None)
+        before_model = {col.GetItemAsObject(i).GetID() for i in range(col.GetNumberOfItems())}
+        col = slicer.mrmlScene.GetNodesByClass("vtkMRMLMarkupsFiducialNode"); col.UnRegister(None)
+        before_lm = {col.GetItemAsObject(i).GetID() for i in range(col.GetNumberOfItems())}
+        col = slicer.mrmlScene.GetNodesByClass("vtkMRMLTableNode"); col.UnRegister(None)
+        before_table = {col.GetItemAsObject(i).GetID() for i in range(col.GetNumberOfItems())}
+      except Exception:
+        pass
+
       success, message = self.logic.loadSSMDatabase(dbPath)
       if success:
         slicer.util.showStatusMessage(f"✅ {message}", 3000)
@@ -449,14 +475,40 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
         finally:
           del b
 
-        # Auto-select nodes created by load (this will trigger onExplorerNodeSelected)
+        # Auto-select nodes created by this load operation (avoid stale-name collisions)
         try:
-          m = slicer.util.getNode(f"{dbName}_template")
-          l = slicer.util.getNode(f"{dbName}_template_correspondences")
-          t = slicer.util.getNode(f"ssm_data_{dbName}")
+          m = l = t = None
+          col = slicer.mrmlScene.GetNodesByClass("vtkMRMLModelNode"); col.UnRegister(None)
+          for i in range(col.GetNumberOfItems()):
+            n = col.GetItemAsObject(i)
+            if n.GetID() not in before_model:
+              m = n
+          col = slicer.mrmlScene.GetNodesByClass("vtkMRMLMarkupsFiducialNode"); col.UnRegister(None)
+          for i in range(col.GetNumberOfItems()):
+            n = col.GetItemAsObject(i)
+            if n.GetID() not in before_lm and "correspondences" in (n.GetName() or "").lower():
+              l = n
+          col = slicer.mrmlScene.GetNodesByClass("vtkMRMLTableNode"); col.UnRegister(None)
+          for i in range(col.GetNumberOfItems()):
+            n = col.GetItemAsObject(i)
+            if n.GetID() not in before_table:
+              t = n
+          if m is None:
+            m = slicer.util.getNode(f"{dbName}_template")
+          if l is None:
+            l = slicer.util.getNode(f"{dbName}_template_correspondences")
+          if t is None:
+            t = slicer.util.getNode(f"ssm_data_{dbName}")
           self.explorerModelSelector.setCurrentNode(m)
           self.explorerLandmarksSelector.setCurrentNode(l)
           self.explorerTableSelector.setCurrentNode(t)
+          sel_msg = (
+            f"Explorer selection -> Model: {(m.GetName() if m else 'none')}, "
+            f"Correspondences: {(l.GetName() if l else 'none')}, "
+            f"Table: {(t.GetName() if t else 'none')}"
+          )
+          slicer.util.showStatusMessage(sel_msg, 5000)
+          logging.info(sel_msg)
         except Exception as e:
           logging.warning(f"Auto-select failed: {e}")
 
@@ -480,12 +532,17 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
         slicer.util.errorDisplay(message)
 
   def onSelect(self):
-    self.ingestButton.enabled = bool(
+    ready = bool(
       self.ssmTemplateModelSelector.currentPath and
       self.ssmTemplateLandmarksSelector.currentPath and
       self.ssmSparseLandmarksSelector.currentPath and
       self.ssmPopulationDirSelector.currentPath
     )
+    self.ingestButton.enabled = ready
+    if ready:
+      self.ingestStatusLabel.setText("Status: READY - ingest inputs are complete.")
+    else:
+      self.ingestStatusLabel.setText("Status: BLOCKED - select template model, dense/sparse landmarks, and population folder.")
 
   def onIngestButton(self):
     populationDir = self.ssmPopulationDirSelector.currentPath
@@ -603,8 +660,9 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
       return
 
     # cache geometry/SSM
-    self.ssm_data['template_vertices'] = slicer.util.arrayFromModelPoints(modelNode).astype(np.float64, copy=False)
-    self.ssm_data['original_points_RAS'] = slicer.util.arrayFromMarkupsControlPoints(landmarkNode).astype(np.float64, copy=False)
+    self.ssm_data['base_template_vertices'] = slicer.util.arrayFromModelPoints(modelNode).astype(np.float64, copy=True)
+    self.ssm_data['template_vertices'] = self.ssm_data['base_template_vertices'].copy()
+    self.ssm_data['original_points_RAS'] = slicer.util.arrayFromMarkupsControlPoints(landmarkNode).astype(np.float64, copy=True)
     
     mean_flat = slicer.util.arrayFromTableColumn(tableNode, "mean_shape")
     self.ssm_data['mean_RAS'] = mean_flat.reshape(num_points_in_landmarks, 3).astype(np.float64, copy=False)
@@ -693,11 +751,18 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     if w is None:
       return
     modes = self.ssm_data['modes_RAS']
-    mean = self.ssm_data['mean_RAS']
     # aggregate deformation across first k PCs shown
     k = min(len(self.pcSliders), modes.shape[-1])
+    # Keep method switching visually stable: when all shown PC weights are zero,
+    # preserve the exact template-centered baseline rather than re-solving with a
+    # different backend (which can introduce tiny numerical drift).
+    if k == 0 or np.allclose(w[:k], 0.0):
+      self.resetGeometry()
+      return
     agg = np.tensordot(modes[...,:k], w[:k], axes=(2,0))   # (n_pts,3)
-    target = mean + agg
+    # Template-centered deformation: slider weights are applied as offsets from
+    # the loaded template landmarks, not from SSM mean landmarks.
+    target = self.ssm_data['original_points_RAS'] + agg
 
     # Update landmarks
     slicer.util.updateMarkupsControlPointsFromArray(landmarkNode, target.astype(np.float64, copy=False))
@@ -719,14 +784,17 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
           modelNode = self.explorerModelSelector.currentNode()
           if modelNode is None: return False
 
-          V = slicer.util.arrayFromModelPoints(modelNode).astype(np.float64, copy=False)
-          self.ssm_data['template_vertices'] = V
+          V = self.ssm_data.get('base_template_vertices', None)
+          if V is None:
+              V = slicer.util.arrayFromModelPoints(modelNode).astype(np.float64, copy=True)
+              self.ssm_data['base_template_vertices'] = V.copy()
+          self.ssm_data['template_vertices'] = V.copy()
 
           if self._methodIndex()==0:
-              lm = self.ssm_data['mean_RAS'].astype(np.float64, copy=False)
+              lm = self.ssm_data['original_points_RAS'].astype(np.float64, copy=False)
               k = min(32, lm.shape[0])
               tree = cKDTree(lm)
-              try: d, idx = tree.query(V, k=k, workers=-1)
+              try: d, idx = tree.query(self.ssm_data['template_vertices'], k=k, workers=-1)
               except TypeError: d, idx = tree.query(V, k=k)
               h = np.percentile(d[:, -1], 75) + 1e-9
               w = np.exp(-(d*d)/(h*h))
@@ -780,8 +848,8 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
           Minv = diags(1.0/np.maximum(M.diagonal(),1e-12))
           A0 = (L.T @ Minv @ L).tocsr()
 
-          lm_mean = self.ssm_data['mean_RAS'].astype(np.float64, copy=False)
-          kdt = cKDTree(Vtri); _, idx = kdt.query(lm_mean, k=1)
+          lm_base = self.ssm_data['original_points_RAS'].astype(np.float64, copy=False)
+          kdt = cKDTree(Vtri); _, idx = kdt.query(lm_base, k=1)
 
           Wd = np.zeros(n, dtype=np.float64); Wd[idx] = 1.0
           lam = 1e4
@@ -809,7 +877,7 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     indices = self.ssm_data['interpolation_indices']
     weights = self.ssm_data['interpolation_weights']
     # total landmark delta across multiple PCs
-    delta_landmarks = (target - self.ssm_data['mean_RAS'])  # (nL,3)
+    delta_landmarks = (target - self.ssm_data['original_points_RAS'])  # (nL,3)
     neighbor_deltas = delta_landmarks[indices]             # (nV,k,3)
     disp = np.sum(neighbor_deltas * weights[..., np.newaxis], axis=1)
     new_vertices = V0 + disp
@@ -832,7 +900,11 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
           pd = modelNode.GetPolyData(); pts = pd.GetPoints()
           orig_pid = self.ssm_data.get('bih_orig_pid', None)
           if orig_pid is not None:
-              base = slicer.util.arrayFromModelPoints(modelNode).astype(np.float32, copy=False)
+              base = self.ssm_data.get('base_template_vertices', None)
+              if base is None:
+                  base = slicer.util.arrayFromModelPoints(modelNode).astype(np.float64, copy=True)
+                  self.ssm_data['base_template_vertices'] = base.copy()
+              base = np.array(base, dtype=np.float32, copy=True)
               base[orig_pid] = X.astype(np.float32, copy=False)
               arr = numpy_support.numpy_to_vtk(base, deep=1)
           else:

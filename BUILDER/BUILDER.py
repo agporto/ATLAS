@@ -567,6 +567,14 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
       t2 = vtk.vtkThinPlateSplineTransform(); t2.SetSourceLandmarks(baseLM); t2.SetTargetLandmarks(mean); t2.SetBasisToR()
       f2 = vtk.vtkTransformPolyDataFilter(); f2.SetInputData(baseMesh); f2.SetTransform(t2); f2.Update()
       bWarp = f2.GetOutput()
+    
+    bWarpPts_np = vtk_np.vtk_to_numpy(bWarp.GetPoints().GetData()).astype(np.float64, copy=False)
+    bad = ~np.isfinite(bWarpPts_np).all(axis=1)
+    if bad.any():
+      raise ValueError(
+        f"Template warp to mean produced {int(bad.sum())} non-finite vertices. "
+        "This usually means the base mesh has NaN/Inf coordinates or the base sparse landmarks are duplicate/degenerate for TPS."
+      )
 
     bWarpPts = bWarp.GetPoints(); basePolys = bWarp.GetPolys()
     grp = vtk.vtkMultiBlockDataGroupFilter()
@@ -593,7 +601,12 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
       raise ValueError("Warp produced no finite specimen points for KD-tree matching.")
 
     tree = cKDTree(clean_spec)
-    tmpl = vtk_np.vtk_to_numpy(bWarpPts.GetData())
+    tmpl = vtk_np.vtk_to_numpy(bWarpPts.GetData()).astype(np.float64, copy=False)
+    bad_tmpl = ~np.isfinite(tmpl).all(axis=1)
+    if bad_tmpl.any():
+      raise ValueError(
+        f"Template query points contain {int(bad_tmpl.sum())} non-finite rows before KD-tree search."
+      )
     try: distances, idxs = tree.query(tmpl, k=1, workers=-1)
     except TypeError: distances, idxs = tree.query(tmpl, k=1, n_jobs=-1)
     corr_np = clean_spec[idxs]
@@ -752,26 +765,80 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
     return float(np.linalg.norm([b[1]-b[0], b[3]-b[2], b[5]-b[4]]))
 
   def sample_indices_poisson(self, pd, frac):
-    tri = vtk.vtkTriangleFilter(); tri.SetInputData(pd); tri.PassLinesOff(); tri.PassVertsOff(); tri.Update()
-    idf = vtk.vtkIdFilter(); idf.PointIdsOn(); idf.SetPointIdsArrayName("origIds"); idf.SetInputData(tri.GetOutput()); idf.Update()
+    tri = vtk.vtkTriangleFilter()
+    tri.SetInputData(pd)
+    tri.PassLinesOff()
+    tri.PassVertsOff()
+    tri.Update()
+    tri_pd = tri.GetOutput()
+
     try:
-      ps = vtk.vtkPoissonDiskSampler(); ps.SetRadius(max(1e-9, float(frac))*self._bbox_diag(tri.GetOutput()))
-      ps.SetInputConnection(idf.GetOutputPort()); ps.Update()
-      arr = ps.GetOutput().GetPointData().GetArray("origIds")
-      return vtk_np.vtk_to_numpy(arr).astype(np.int64, copy=False) if arr else np.empty((0,), np.int64)
+      ids_name = "origIds"
+
+      if hasattr(vtk, "vtkGenerateIds"):
+        gen = vtk.vtkGenerateIds()
+        if hasattr(gen, "PointIdsOn"): gen.PointIdsOn()
+        if hasattr(gen, "CellIdsOff"): gen.CellIdsOff()
+        if hasattr(gen, "SetPointIdsArrayName"): gen.SetPointIdsArrayName(ids_name)
+        elif hasattr(gen, "SetIdsArrayName"): gen.SetIdsArrayName(ids_name)
+        gen.SetInputData(tri_pd)
+        gen.Update()
+        id_output = gen.GetOutputPort()
+
+      elif hasattr(vtk, "vtkIdFilter"):
+        idf = vtk.vtkIdFilter()
+        idf.PointIdsOn()
+        if hasattr(idf, "CellIdsOff"): idf.CellIdsOff()
+        idf.SetPointIdsArrayName(ids_name)
+        idf.SetInputData(tri_pd)
+        idf.Update()
+        id_output = idf.GetOutputPort()
+
+      else:
+        raise AttributeError("No VTK id-generation filter available")
+
+      if not hasattr(vtk, "vtkPoissonDiskSampler"):
+        raise AttributeError("vtkPoissonDiskSampler unavailable")
+
+      ps = vtk.vtkPoissonDiskSampler()
+      ps.SetRadius(max(1e-9, float(frac)) * self._bbox_diag(tri_pd))
+      ps.SetInputConnection(id_output)
+      ps.Update()
+
+      arr = ps.GetOutput().GetPointData().GetArray(ids_name)
+      if arr is not None:
+        return vtk_np.vtk_to_numpy(arr).astype(np.int64, copy=False)
+
     except Exception:
-      pts = vtk_np.vtk_to_numpy(pd.GetPoints().GetData()); n = pts.shape[0]
-      if n == 0: return np.empty((0,), np.int64)
-      r = max(1e-9, float(frac)) * self._bbox_diag(pd); kdt = cKDTree(pts)
-      remaining = np.ones(n, dtype=bool); out = []
-      c = pts.mean(axis=0); i0 = int(np.argmax(np.sum((pts - c)**2, axis=1))); stack = [i0]
-      while stack:
-        i = stack.pop()
-        if not remaining[i]: continue
-        out.append(i)
-        nbrs = kdt.query_ball_point(pts[i], r); remaining[nbrs] = False
-        if remaining.any(): stack.append(int(np.flatnonzero(remaining)[0]))
-      out.sort(); return np.array(out, dtype=np.int64)
+      pass
+
+    pts = vtk_np.vtk_to_numpy(tri_pd.GetPoints().GetData()).astype(np.float64, copy=False)
+    n = pts.shape[0]
+    if n == 0:
+      return np.empty((0,), np.int64)
+
+    r = max(1e-9, float(frac)) * self._bbox_diag(tri_pd)
+    kdt = cKDTree(pts)
+
+    remaining = np.ones(n, dtype=bool)
+    out = []
+
+    c = pts.mean(axis=0)
+    i0 = int(np.argmax(np.sum((pts - c)**2, axis=1)))
+    stack = [i0]
+
+    while stack:
+      i = stack.pop()
+      if not remaining[i]:
+        continue
+      out.append(i)
+      nbrs = kdt.query_ball_point(pts[i], r)
+      remaining[nbrs] = False
+      if remaining.any():
+        stack.append(int(np.flatnonzero(remaining)[0]))
+
+    out.sort()
+    return np.array(out, dtype=np.int64)
 
   def previewCountForRadius(self, polyDataOrNode, spacingPct):
     pd = polyDataOrNode if isinstance(polyDataOrNode, vtk.vtkPolyData) else polyDataOrNode.GetPolyData()

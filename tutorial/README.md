@@ -19,7 +19,7 @@ Open ATLAS ⟶ BUILDER.
 You should observe the following screen:
 
 <p align="center">
-<img src="images/1.png" width = 500>
+<img src="images/1.png" width = 600>
 </p>
 
 `ATLAS` organizes functionality into three scripted modules: `BUILDER`, `DATABASE`, and `PREDICT`.    
@@ -31,7 +31,7 @@ You should observe the following screen:
 **Notable Features**: Robust base selection; flexible file stem resolution; index preservation during downsampling.   
 
 <p align="center">
-<img src="images/2.png" width = 500>
+<img src="images/2.png" width = 600>
 </p>
 
 #### DATABASE   
@@ -42,7 +42,7 @@ You should observe the following screen:
 **Outputs**: manifest.json, ssm_model.npz, copied template and markup files.   
 
 <p align="center">
-<img src="images/3.png" width = 500>
+<img src="images/3.png" width = 600>
 </p>
 
 #### PREDICT   
@@ -56,7 +56,7 @@ You should observe the following screen:
 **Outputs**: Predicted landmark .mrk.json files, warped template models (scene), optionally refined projected landmarks, and optional batch warped mesh exports as .vtp files.   
 
 <p align="center">
-<img src="images/4.png" width = 500>
+<img src="images/4.png" width = 600>
 </p>
 
 ## BUILDER
@@ -69,7 +69,7 @@ Download the ATLAS sample dataset from [here](https://github.com/SlicerMorph/Mou
 Set `Model directory` with source models (.ply format), `Landmark directory` with source landmarks (.mrk.json format), and `Output directory`. In `Output directory`, a timestamped folder will be made containing aligned meshes (alignedModels/*), aligned landmarks (alignedLMs/*), dense correspondences/semilandmarks (population_correspondences/*), and atlas files (atlas/atlas_model.ply, atlas/atlas_sparse_landmarks.mrk.json, atlas/atlas_dense_correspondences.mrk.json).
 
 <p align="center">
-<img src="images/5.png" width = 500>
+<img src="images/5.png" width = 600>
 </p>
 
 ### Step 3. Specify `Advanced Options` for atlas and dense correspondences generation.   
@@ -81,33 +81,34 @@ Set `Model directory` with source models (.ply format), `Landmark directory` wit
 * **Expected points**: Adjust `Sampling radius` and click `Preview Point Count` until desired count is achieved.
 
 <p align="center">
-<img src="images/6.png" width = 500>
+<img src="images/6.png" width = 600>
 </p>
 
 ### Step 4. Under `Run + Status`, Click `Run BUILDER Pipeline`.
 Progress will be reported in the window below `Run BUILDER Pipeline` and a model with landmarks should appear in the 3D viewer.
 
 <p align="center">
-<img src="images/7.png" width = 500>
+<img src="images/7.png" width = 600>
 </p>
 
 <p align="center">
-<img src="images/6a.png" width = 500>
+<img src="images/6a.png" width = 600>
 </p>
 
 If everything worked, you will see something indicating saved outputs and their locations.
 
 <p align="center">
-<img src="images/8.png" width = 500>
+<img src="images/8.png" width = 600>
 </p>
 
 ## DATABASE
 Use atlas and dense correspondences from `BUILDER` to make a PCA-based statistical shape model (SSM) database. 
 
-### Step 1. `Database Library`: Specify `Database location` output from `BUILDER` (ex: atlas_out/YYYY_MM-DD_HH_MM_SS). 
+### Step 1. `Database Library`: Specify `Database location` output from `BUILDER`.
+For example: atlas_out/YYYY_MM-DD_HH_MM_SS 
 
 <p align="center">
-<img src="images/8a.png" width = 500>
+<img src="images/8a.png" width = 600>
 </p>
 
 ### Step 2. `Ingest New SSM`: Select corresponding files and folders found within `Database location` above.
@@ -118,7 +119,7 @@ Use atlas and dense correspondences from `BUILDER` to make a PCA-based statistic
 * **New Database Name**: your database name (ex: mouse_db)
 
 <p align="center">
-<img src="images/9.png" width = 500>
+<img src="images/9.png" width = 600>
 </p>
 
 Click `Ingest into Database`
@@ -127,31 +128,32 @@ Click `Ingest into Database`
 Under `Database Library`, your new database should appear. Select your new database and click `Load Selected Database`.
 
 <p align="center">
-<img src="images/10.png" width = 500>
+<img src="images/10.png" width = 600>
 </p>
 
 ### Step 4. `SSM Explorer (Template-Centered)`: Explore SSM changes through principal component space. 
 The form fields under `SSM Explorer (Template-Centered) will automatically populate and your atlas model and landmarks will open in the 3D viewer. 
 
 <p align="center">
-<img src="images/11.png" width = 500>
+<img src="images/11.png" width = 600>
 </p>
 
-Adjust model views and positions on PC sliders to visualize morphological changes across principal components.
+Adjust positions on PC sliders to visualize morphological change across &plusmn;SD's for each principal component.
 
 <p align="center">
-<img src="images/12.png" width = 500>
+<img src="images/12.png" width = 600>
 </p>
 
 <p align="center">
-<img src="images/13.png" width = 500>
+<img src="images/13.png" width = 600>
 </p>
 
 
 ## PREDICT
 Use the SSM database from `DATABASE` to predict landmark positions on new specimens. 
 
-### Step 1. `Prepare`: Ensure SSM is loaded following [`DATABASE` ⟶ Step 3 above](https://github.com/aubricot/ATLAS-seg/tree/tutorial/tutorial#step-3-database-library-load-database-into-atlas).
+### Step 1. `Prepare`: Ensure SSM is loaded.
+Follow [`DATABASE` ⟶ Step 3 above](https://github.com/aubricot/ATLAS-seg/tree/tutorial/tutorial#step-3-database-library-load-database-into-atlas).
 
 ### Step 2. `Single Run`: Run landmark prediction for a single target mesh.
 * **Template Model**: <your_ssm>_template
@@ -162,44 +164,46 @@ Use the SSM database from `DATABASE` to predict landmark positions on new specim
 
 Load a model to predict landmarks for into your Scene using the 3D Slicer Add Data button. 
 <p align="center">
-<img src="images/13a.png" width = 500>
+<img src="images/13a.png" width = 600>
 </p>
+
+Ensure all form fields are correctly filled.
   
 <p align="center">
-<img src="images/14.png" width = 500>
+<img src="images/14.png" width = 600>
 </p>
    
-1) Subsample source/target.
+1) Subsample source/target.   
 Downsample source and target point clouds based on value set in Advanced ⟶ Point density and max projection ⟶ Point Density.
    
 <p align="center">
-<img src="images/15.png" width = 500>
+<img src="images/15.png" width = 600>
 </p>
    
-2) Run rigid alignment.
+2) Run rigid alignment.   
 Global (RANSAC) and rigid (ICP) registration that register the source point cloud to the target.
    
 <p align="center">
-<img src="images/16.png" width = 500>
+<img src="images/16.png" width = 600>
 </p>
    
-2) b. Preview Rigid Alignment.
+2) b. Preview Rigid Alignment.   
    
 <p align="center">
-<img src="images/17.png" width = 500>
+<img src="images/17.png" width = 600>
 </p>
    
-3) Run deformable alignment.
+3) Run deformable alignment.   
 Registration where source point cloud is deformed to target point cloud, then the registration is used to propagate the source landmarks to target specimen. Uses atlas/SSM as biological prior to avoid biologically implausible deformations (bioCPD) followed by CPD (coherent point drift) to capture local details. 
 
 <p align="center">
-<img src="images/18.png" width = 500>
+<img src="images/18.png" width = 600>
 </p>
 
 4) Show final registration.
    
 <p align="center">
-<img src="images/19.png" width = 500>
+<img src="images/19.png" width = 600>
 </p>
    
 ### Step 3. Display and evaluate ATLAS results.
@@ -208,25 +212,25 @@ All results are saved in the PREDICT runs folder that can be viewed in the 3D Sl
 By default, only the Warped Source model (green), Target Model (blue), and the final ATLAS Refined Predicted Landmarks are displayed.
 
 <p align="center">
-<img src="images/20.png" width = 500>
+<img src="images/20.png" width = 600>
 </p>
 
 To display the Landmark Predictions (pink) versus the Refined Predicted Landmarks (pink), change the color of the Refined Predicted Landmarks to blue. Then, toggle the visibility (eyeball button) to on.
 
 <p align="center">
-<img src="images/21.png" width = 500>
+<img src="images/21.png" width = 600>
 </p>
 
 To display the rigidly registered Source Pointcloud (red) and Target Pointcloud (blue), toggle the visibility (eyeball button) to on and turn off any other visible nodes.
 
 <p align="center">
-<img src="images/22.png" width = 500>
+<img src="images/22.png" width = 600>
 </p>
 
-### Step 4. Fine tune landmark prediction parameters and repeat Steps 2-3 until desired results are achieved (Optional). 
+### Step 4. (Optional): Fine tune landmark prediction parameters and repeat Steps 2-3 until desired results are achieved. 
 These steps are especially important for macroevolutionary comparative analyses that may deviate from the original SSM.
 
-### Step 4a. `Template Optimization` (Optional): Optimize template for Target model to improve landmark transfer prediction.
+### Step 4a. (Optional): `Template Optimization`: Optimize template for Target model to improve landmark transfer prediction.
 * **Template Model**: <your_ssm>_template
 * **Template Correspondences**: <your_ssm>_template_correspondences 
 * **Template Landmarks**: <your_ssm>_template_sparse_landmarks
@@ -236,10 +240,10 @@ These steps are especially important for macroevolutionary comparative analyses 
 This will either produce an optimized template or return that the baseline template was already a good fit.
 
 <p align="center">
-<img src="images/23.png" width = 500>
+<img src="images/23.png" width = 600>
 </p>
 
-### Step 4b. `Advanced` (Optional): Adjust advanced parameters. 
+### Step 4b. (Optional): `Advanced`: Adjust advanced parameters. 
 `General Settings`
 * **Skip scaling**:  Disables size normalization between template and target
 * **Skip projection**: Skips final surface snap of landmarks
@@ -288,5 +292,5 @@ Use defaults or parameters chosen under `Template Optimization` and `Advanced` t
 * **Skip template optimization**: Defaults to False. Skips template optimization. 
 
 <p align="center">
-<img src="images/24.png" width = 500>
+<img src="images/24.png" width = 600>
 </p>

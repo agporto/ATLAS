@@ -151,31 +151,31 @@ Use the SSM database from `DATABASE` to predict landmark positions on new specim
 * **Template Landmarks**: <your_ssm>_template_sparse_landmarks
 * **Target model**: Choose a model to predict landmarks for
 * **SSM Data Table**: ssm_data_<your_ssm>
-
+   
 <p align="center">
 <img src="images/14.png" width = 500>
 </p>
-
+   
 1) Subsample source/target.
 Downsample source and target point clouds based on value set in Advanced ⟶ Point density and max projection ⟶ Point Density.
-
+   
 <p align="center">
 <img src="images/15.png" width = 500>
 </p>
-
+   
 2) Run rigid alignment.
 Global (RANSAC) and rigid (ICP) registration that register the source point cloud to the target.
-
+   
 <p align="center">
 <img src="images/16.png" width = 500>
 </p>
-
-2b) Preview Rigid Alignment.
-
+   
+2) b. Preview Rigid Alignment.
+   
 <p align="center">
 <img src="images/17.png" width = 500>
 </p>
-
+   
 3) Run deformable alignment.
 Registration where source point cloud is deformed to target point cloud, then the registration is used to propagate the source landmarks to target specimen. Uses atlas/SSM as biological prior to avoid biologically implausible deformations (bioCPD) followed by CPD (coherent point drift) to capture local details. 
 
@@ -184,11 +184,11 @@ Registration where source point cloud is deformed to target point cloud, then th
 </p>
 
 4) Show final registration.
-
+   
 <p align="center">
 <img src="images/19.png" width = 500>
 </p>
-
+   
 ### Step 3. Display and evaluate ATLAS results.
 All results are saved in the PREDICT runs folder that can be viewed in the 3D Slicer Data module. Rotate and inspect results (meshes, pointclouds, landmarks) to ensure the alignment and landmark prediction behaviors are as expected.
 
@@ -260,7 +260,7 @@ This will either produce an optimized template or return that the baseline templ
 * **Max iterations**: Iteration limit for CPD. Default 250
 * **SSM weight (lambda_reg)**: SSM constraint strength. Higher = closer to mean
 
-### Step 6. `Batch`: Run landmark prediction for a directory of target meshes. 
+### Step 5. `Batch`: Run landmark prediction for a directory of target meshes. 
 Use defaults or parameters chosen under `Template Optimization` and `Advanced` to run landmark prediction in batch mode.
 
 * **Source mesh**: GridRANSAC_TemplateModel

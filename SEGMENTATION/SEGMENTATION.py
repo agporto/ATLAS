@@ -32,23 +32,69 @@ class SEGMENTATIONWidget(ScriptedLoadableModuleWidget):
     if p: le.setText(p)
 
   def _buildUI(self):
-    root=ctk.ctkCollapsibleButton(); root.text="Batch SEGMENTATION"; root.collapsed=False; self.layout.addWidget(root); f=qt.QFormLayout(root)
+    root=ctk.ctkCollapsibleButton(); root.text="SEGMENTATION Workflow"; root.collapsed=False; self.layout.addWidget(root); f=qt.QFormLayout(root)
+    info = qt.QLabel("Select paired mesh/.mrk.json folders, tune segmentation settings, then run.")
+    info.setWordWrap(True)
+    f.addRow(info)
+
+    basic = ctk.ctkCollapsibleButton(); basic.text = "Required Inputs"; basic.collapsed = False
+    fb = qt.QFormLayout(basic); f.addRow(basic)
     self.meshDir=qt.QLineEdit(); b1=qt.QToolButton(); b1.text="…"; b1.clicked.connect(lambda:self._browse(self.meshDir))
-    h1=qt.QHBoxLayout(); h1.addWidget(self.meshDir); h1.addWidget(b1); f.addRow("Meshes folder:",h1)
+    h1=qt.QHBoxLayout(); h1.addWidget(self.meshDir); h1.addWidget(b1); fb.addRow("Meshes folder:",h1)
     self.mrkDir=qt.QLineEdit(); b2=qt.QToolButton(); b2.text="…"; b2.clicked.connect(lambda:self._browse(self.mrkDir))
-    h2=qt.QHBoxLayout(); h2.addWidget(self.mrkDir); h2.addWidget(b2); f.addRow("Markups (.mrk.json) folder:",h2)
+    h2=qt.QHBoxLayout(); h2.addWidget(self.mrkDir); h2.addWidget(b2); fb.addRow("Dense Correspondences (.mrk.json) Folder:",h2)
     self.outDir=qt.QLineEdit(); b3=qt.QToolButton(); b3.text="…"; b3.clicked.connect(lambda:self._browse(self.outDir))
-    h3=qt.QHBoxLayout(); h3.addWidget(self.outDir); h3.addWidget(b3); f.addRow("Output folder:",h3)
-    self.kSeg=qt.QSpinBox(); self.kSeg.setRange(2,64); self.kSeg.setValue(15); f.addRow("# Segments (k):",self.kSeg)
-    self.knn=qt.QSpinBox(); self.knn.setRange(4,128); self.knn.setValue(12); f.addRow("kNN on loci:",self.knn)
-    self.smooth=qt.QSpinBox(); self.smooth.setRange(0,10); self.smooth.setValue(1); f.addRow("1-ring smoothing iters:",self.smooth)
-    self.alpha=qt.QDoubleSpinBox(); self.alpha.setRange(0.0,1.0); self.alpha.setSingleStep(0.05); self.alpha.setValue(0.7); f.addRow("Feature vs Spatial weight α:",self.alpha)
-    self.autoTune = qt.QCheckBox("Auto-tune (k, α)"); self.autoTune.setChecked(False); f.addRow(self.autoTune)
-    self.kGrid = qt.QLineEdit("10,12,15,18"); f.addRow("k grid:", self.kGrid)
-    self.aGrid = qt.QLineEdit("0.5,0.7,0.9"); f.addRow("α grid:", self.aGrid)
-    self.saveVTP=qt.QCheckBox("Write .vtp with SegID & SegID_smooth"); self.saveVTP.setChecked(True); f.addRow(self.saveVTP)
-    self.previewN=qt.QSpinBox(); self.previewN.setRange(0,20); self.previewN.setValue(3); f.addRow("Preview first N in scene:",self.previewN)
-    self.runBtn=qt.QPushButton("Run"); self.runBtn.clicked.connect(self.onRun); f.addRow(self.runBtn)
+    h3=qt.QHBoxLayout(); h3.addWidget(self.outDir); h3.addWidget(b3); fb.addRow("Output folder:",h3)
+
+    adv = ctk.ctkCollapsibleButton(); adv.text = "Advanced Tuning"; adv.collapsed = True
+    fa = qt.QFormLayout(adv); f.addRow(adv)
+    self.kSeg=qt.QSpinBox(); self.kSeg.setRange(2,64); self.kSeg.setValue(15); fa.addRow("# Segments (k):",self.kSeg)
+    self.knn=qt.QSpinBox(); self.knn.setRange(4,128); self.knn.setValue(12); fa.addRow("kNN on loci:",self.knn)
+    self.smooth=qt.QSpinBox(); self.smooth.setRange(0,10); self.smooth.setValue(1); fa.addRow("1-ring smoothing iters:",self.smooth)
+    self.alpha=qt.QDoubleSpinBox(); self.alpha.setRange(0.0,1.0); self.alpha.setSingleStep(0.05); self.alpha.setValue(0.7); fa.addRow("Feature vs Spatial weight α:",self.alpha)
+    self.autoTune = qt.QCheckBox("Auto-tune (k, α)"); self.autoTune.setChecked(False); fa.addRow(self.autoTune)
+    self.kGrid = qt.QLineEdit("10,12,15,18"); fa.addRow("k grid:", self.kGrid)
+    self.aGrid = qt.QLineEdit("0.5,0.7,0.9"); fa.addRow("α grid:", self.aGrid)
+    self.saveVTP=qt.QCheckBox("Write .vtp with SegID & SegID_smooth"); self.saveVTP.setChecked(True); fa.addRow(self.saveVTP)
+    self.previewN=qt.QSpinBox(); self.previewN.setRange(0,20); self.previewN.setValue(3); fa.addRow("Preview first N in scene:",self.previewN)
+
+    self.statusLbl = qt.QLabel("")
+    self.statusLbl.setWordWrap(True)
+    f.addRow(self.statusLbl)
+    self.runBtn=qt.QPushButton("Run Segmentation"); self.runBtn.clicked.connect(self.onRun); f.addRow(self.runBtn)
+
+    self.autoTune.toggled.connect(self._onAutoTuneChanged)
+    self.meshDir.textChanged.connect(lambda *_: self._validateInputs())
+    self.mrkDir.textChanged.connect(lambda *_: self._validateInputs())
+    self.outDir.textChanged.connect(lambda *_: self._validateInputs())
+    self._onAutoTuneChanged(self.autoTune.isChecked())
+    self._validateInputs()
+
+  def _onAutoTuneChanged(self, enabled):
+    self.kGrid.setEnabled(bool(enabled))
+    self.aGrid.setEnabled(bool(enabled))
+
+  def _validateInputs(self):
+    dMeshes=os.path.abspath(os.path.expanduser(self._t(self.meshDir)))
+    dMrk=os.path.abspath(os.path.expanduser(self._t(self.mrkDir)))
+    dOut=os.path.abspath(os.path.expanduser(self._t(self.outDir)))
+    if not (os.path.isdir(dMeshes) and os.path.isdir(dMrk)):
+      self.runBtn.enabled = False
+      self.statusLbl.setText("Status: BLOCKED - select valid mesh and markups folders.")
+      return
+    mesh_files = [f for f in os.listdir(dMeshes) if os.path.splitext(f)[1].lower() in {".ply",".stl",".obj",".vtp",".vtk"}]
+    mrk_files = [f for f in os.listdir(dMrk) if f.lower().endswith(".mrk.json")]
+    mesh_bases = {os.path.splitext(f)[0].lower() for f in mesh_files}
+    mrk_bases = {os.path.splitext(os.path.splitext(f)[0])[0].lower() for f in mrk_files}
+    pairs = len(mesh_bases & mrk_bases)
+    out_ok = bool(dOut)
+    self.runBtn.enabled = pairs > 0 and out_ok
+    if pairs == 0:
+      self.statusLbl.setText("Status: BLOCKED - no mesh/.mrk.json filename pairs found.")
+    elif not out_ok:
+      self.statusLbl.setText("Status: BLOCKED - choose an output folder.")
+    else:
+      self.statusLbl.setText(f"Status: READY - {pairs} paired specimens detected.")
 
   def onRun(self):
     dMeshes=os.path.abspath(os.path.expanduser(self._t(self.meshDir)))
@@ -65,8 +111,15 @@ class SEGMENTATIONWidget(ScriptedLoadableModuleWidget):
       return [float(x) for x in s.replace(';',',').split(',') if x.strip()]
 
     auto = self._checked(self.autoTune)
-    k_grid = _parse_ints(self._t(self.kGrid)) if auto else None
-    a_grid = _parse_floats(self._t(self.aGrid)) if auto else None
+    try:
+      k_grid = _parse_ints(self._t(self.kGrid)) if auto else None
+      a_grid = _parse_floats(self._t(self.aGrid)) if auto else None
+    except Exception:
+      slicer.util.errorDisplay("Invalid auto-tune grid values. Use comma-separated numbers (example: k=10,12,15 and alpha=0.5,0.7,0.9).")
+      return
+    if auto and (not k_grid or not a_grid):
+      slicer.util.errorDisplay("Auto-tune is enabled, but k/alpha grids are empty.")
+      return
 
     with slicer.util.tryWithErrorDisplay("SEGMENTATION failed", waitCursor=True):
       res=self.logic.run(
@@ -79,6 +132,7 @@ class SEGMENTATIONWidget(ScriptedLoadableModuleWidget):
       msg = f"SEGMENTATION: {res['n_pairs']} pairs, k={res['k']}, wrote={res['wrote']}"
       if 'Q' in res: msg += f", Q={res['Q']:.3f}"
       slicer.util.showStatusMessage(msg)
+      self.statusLbl.setText(f"Status: COMPLETED - last run completed successfully. Outputs written to: {dOut}")
       logging.info(res)
 
 
@@ -160,7 +214,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
 
     # write only used_pairs
     wrote = 0
-    ctn = self._ensure_color_table("SEGMENTATION_Colors", int(labels.max()+1))
+    self._ensure_color_table("SEGMENTATION_Colors", int(labels.max()+1))
     for i, (meshPath, mrkPath) in enumerate(used_pairs):
       V, F, pdW = cache[meshPath]
       P = self._load_mrk_positions_world(mrkPath)

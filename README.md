@@ -46,7 +46,7 @@ When ATLAS becomes available through the Extension Manager, install it like any 
 	git clone https://github.com/agporto/ATLAS.git
 	```
 2. Add the cloned top‑level folder to Slicer using the main dropdown menu: `Developer Tools> Extension Wizard` → Select Extension → Select Folder.
-3. Open one of the ATLAS modules (BUILDER, DATABASE, PREDICT, SEGMENTATION) to confirm load.
+3. Open one of the ATLAS modules (`BUILDER`, `DATABASE`, `PREDICT`, `SEGMENTATION`) to confirm load.
 
 ### 3. Cloud / Remote Environments
 If you use a cloud Slicer image (e.g., MorphoCloud) you can clone the repo into a writable workspace and add the module path as above. Ensure outbound network allowed for Python dependency install (see below).
@@ -70,7 +70,7 @@ ATLAS organizes functionality into four scripted modules:
 
 **Purpose:** Align a set of meshes and sparse landmark sets; automatically pick a reference (closest to mean), similarity-align all specimens, generate a mean (atlas) surface, and derive dense correspondences via TPS warp + k‑d tree mapping. Optionally downsamples to produce a sparser, index‑stable subset.  
 
-**Key Outputs:** Timestamped output folder containing aligned meshes (`*_align.ply`), aligned landmarks (`*_align.mrk.json`), `mean/atlasModel.ply`, `mean/atlasLMs.mrk.json`, and sampled dense set (`atlas.mrk.json`).  
+**Key Outputs:** Timestamped output folder containing aligned meshes (`alignedModels/*`), aligned landmarks (`alignedLMs/*`), atlas files (`atlas/atlas_model.ply`, `atlas/atlas_sparse_landmarks.mrk.json`), and sampled dense set (`atlas/atlas_dense_correspondences.mrk.json`) plus per-specimen dense correspondences in `population_correspondences/`.  
 
 **Notable Features:** Robust base selection; flexible file stem resolution; index preservation during downsampling.
 
@@ -89,14 +89,23 @@ ATLAS organizes functionality into four scripted modules:
 ### PREDICT
 **Category:** Automated Landmark Transfer 
 
-**Purpose:** Transfer template sparse landmarks to a target mesh (single or batch) via multi-stage alignment: subsampling & FPFH features → RANSAC + ICP rigid alignment → PCA‑guided Coherent Point Drift (CPD) deformable registration → optional surface projection refinement.  
+**Purpose:** Transfer template sparse landmarks to a target mesh (single or batch) via multi-stage alignment: subsampling & FPFH features → RANSAC + ICP rigid alignment → PCA‑guided Coherent Point Drift (CPD) deformable registration → optional surface projection refinement. Batch mode can also optionally export the warped template mesh for each target.  
 
 **Modes:**
 * Single specimen alignment (tune parameters, inspect intermediate clouds/models)  
 * Batch processing (reuse tuned parameters; cancellation + progress)  
 * Template optimization (continuous search in SSM space + RANSAC scoring to refine initial template pose/shape)  
 
-**Outputs:** Predicted landmark `.mrk.json` files, warped template models (scene), optionally refined projected landmarks.
+**Outputs:** Predicted landmark `.mrk.json` files, warped template models (scene), optionally refined projected landmarks, and optional batch warped mesh exports as `.vtp` files.
+
+### SEGMENTATION
+**Category:** Surface Segmentation
+
+**Purpose:** Segment meshes into consistent anatomical regions using dense correspondences (`.mrk.json`) across a dataset and graph-based clustering.
+
+**Workflow:** Pair meshes and correspondence files by base name -> build per-locus features across specimens -> construct weighted graph -> spectral clustering -> optional smoothing -> write labeled meshes.
+
+**Outputs:** Segmented meshes (`*_seg.vtp`) with label arrays and a label lookup table.
 
 ---
 ## Dependencies
@@ -152,11 +161,12 @@ If you redistribute modified versions, please retain attribution and clearly doc
 ---
 ## Quick Start (Condensed)
 ```text
-1. BUILDER: Provide model + landmark folders → Run → get atlas + dense correspondences.
-2. DATABASE: Ingest atlas model + dense + sparse + population folder → Build SSM → Load.
-3. PREDICT (Single): Tune parameters, run Rigid (RANSAC+ICP) → Deformable (PCA‑CPD) → optional Projection.
+1. BUILDER: Provide model + landmark folders -> Run -> get atlas + dense correspondences.
+2. DATABASE: Ingest atlas model + dense + sparse + population folder -> Build SSM -> Load.
+3. PREDICT (Single): Tune parameters, run Rigid (RANSAC+ICP) -> Deformable (PCA-CPD) -> optional Projection.
 4. PREDICT (Template Optimization): Improve template before large batch.
-5. PREDICT (Batch): Apply tuned settings to directory of targets → landmark .mrk.json outputs.
+5. PREDICT (Batch): Apply tuned settings to directory of targets -> landmark `.mrk.json` outputs, with optional warped mesh `.vtp` exports.
+6. SEGMENTATION (optional): Use dense correspondences to segment target meshes into consistent regions.
 ```
 
 ---

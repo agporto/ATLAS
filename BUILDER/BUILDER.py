@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 import numpy as np
@@ -30,19 +31,25 @@ class BUILDERWidget(ScriptedLoadableModuleWidget):
 
     self.logic = BUILDERLogic()
 
-    root = ctk.ctkCollapsibleButton(); root.text = "Build Atlas, Align Specimens, Export Dense LMs"; root.collapsed = False
+    root = ctk.ctkCollapsibleButton(); root.text = "BUILDER Workflow"; root.collapsed = False
     lay = qt.QFormLayout(root); self.layout.addWidget(root)
+    flowHelp = qt.QLabel("Step order: choose atlas source -> select input/output folders -> tune advanced options -> run.")
+    flowHelp.setWordWrap(True)
+    lay.addRow(flowHelp)
+
+    requiredBox = ctk.ctkCollapsibleButton(); requiredBox.text = "Required Inputs"; requiredBox.collapsed = False
+    reqLay = qt.QFormLayout(requiredBox); lay.addRow(requiredBox)
 
     # Atlas source
     self.createAtlasRadio = qt.QRadioButton("Create atlas from inputs")
     self.loadAtlasRadio   = qt.QRadioButton("Load existing atlas")
     self.createAtlasRadio.setChecked(True)
     g = qt.QButtonGroup(root); g.addButton(self.createAtlasRadio); g.addButton(self.loadAtlasRadio)
-    lay.addRow(self.createAtlasRadio); lay.addRow(self.loadAtlasRadio)
+    reqLay.addRow(self.createAtlasRadio); reqLay.addRow(self.loadAtlasRadio)
 
     # Load-atlas widgets
-    self.atlasBox = ctk.ctkCollapsibleButton(); self.atlasBox.text = "Atlas (when loading)"; self.atlasBox.collapsed = True; self.atlasBox.enabled = False
-    aLay = qt.QFormLayout(self.atlasBox); lay.addRow(self.atlasBox)
+    self.atlasBox = ctk.ctkCollapsibleButton(); self.atlasBox.text = "Atlas files (only when loading)"; self.atlasBox.collapsed = True; self.atlasBox.enabled = False
+    aLay = qt.QFormLayout(self.atlasBox); reqLay.addRow(self.atlasBox)
     self.atlasModelPath = ctk.ctkPathLineEdit(); self.atlasModelPath.filters = ctk.ctkPathLineEdit().Files; self.atlasModelPath.nameFilters = ["Model (*.ply *.stl *.obj *.vtk *.vtp)"]
     self.atlasLMPath    = ctk.ctkPathLineEdit(); self.atlasLMPath.filters    = ctk.ctkPathLineEdit().Files; self.atlasLMPath.nameFilters    = ["Point set (*.fcsv *.mrk.json *.json)"]
     aLay.addRow("Atlas model:", self.atlasModelPath); aLay.addRow("Atlas landmarks:", self.atlasLMPath)
@@ -51,18 +58,24 @@ class BUILDERWidget(ScriptedLoadableModuleWidget):
     self.modelDir = ctk.ctkPathLineEdit(); self.modelDir.filters = ctk.ctkPathLineEdit.Dirs
     self.lmDir    = ctk.ctkPathLineEdit(); self.lmDir.filters    = ctk.ctkPathLineEdit.Dirs
     self.outDir   = ctk.ctkPathLineEdit(); self.outDir.filters   = ctk.ctkPathLineEdit.Dirs
-    lay.addRow("Model directory:", self.modelDir)
-    lay.addRow("Landmark directory:", self.lmDir)
-    lay.addRow("Output directory:", self.outDir)
+    reqLay.addRow("Model directory:", self.modelDir)
+    reqLay.addRow("Landmark directory:", self.lmDir)
+    reqLay.addRow("Output directory:", self.outDir)
+    self.prereqLabel = qt.QLabel("")
+    self.prereqLabel.setWordWrap(True)
+    reqLay.addRow(self.prereqLabel)
+
+    advancedBox = ctk.ctkCollapsibleButton(); advancedBox.text = "Advanced Options"; advancedBox.collapsed = True
+    advLay = qt.QFormLayout(advancedBox); lay.addRow(advancedBox)
 
     # Alignment choice
     self.useSimilarity = qt.QCheckBox("Normalize scale"); self.useSimilarity.setChecked(True)
     self.useSimilarity.setToolTip("Checked (recommended): allow isotropic scaling so size differences are removed. Unchecked: rigid only.")
-    lay.addRow(self.useSimilarity)
+    advLay.addRow(self.useSimilarity)
 
     # Override LM on surface check
     self.overrideCoordCheck = qt.QCheckBox("Override landmark↔mesh coordinate check"); self.overrideCoordCheck.setChecked(False)
-    lay.addRow(self.overrideCoordCheck)
+    advLay.addRow(self.overrideCoordCheck)
 
     # Warp method (NEW)
     self.warpMethod = qt.QComboBox()
@@ -70,27 +83,28 @@ class BUILDERWidget(ScriptedLoadableModuleWidget):
     self.warpMethod.setCurrentIndex(0)
     self.autoFallback = qt.QCheckBox("Auto-fallback to TPS if biharmonic fails"); self.autoFallback.setChecked(True)
     hwarp = qt.QHBoxLayout(); hwarp.addWidget(self.warpMethod); hwarp.addWidget(self.autoFallback)
-    lay.addRow("Warp method:", hwarp)
+    advLay.addRow("Warp method:", hwarp)
 
     # Sampling slider + preview
     self.spacing = ctk.ctkSliderWidget(); self.spacing.singleStep = .1; self.spacing.minimum = 0; self.spacing.maximum = 10; self.spacing.value = 4
     self.spacing.setToolTip("Sampling radius as % of bounding-box diagonal. Larger radius → fewer exported points.")
-    lay.addRow("Sampling radius (% of diag):", self.spacing)
+    advLay.addRow("Sampling radius (% of diag):", self.spacing)
 
-    self.previewBtn = qt.QPushButton("Preview count"); self.previewBtn.enabled = False
+    self.previewBtn = qt.QPushButton("Preview Point Count"); self.previewBtn.enabled = False
     self.previewLbl = qt.QLabel("")
     h = qt.QHBoxLayout(); h.addWidget(self.previewBtn); h.addWidget(self.previewLbl, 1)
-    lay.addRow("Expected points:", h)
+    advLay.addRow("Expected points:", h)
     self._previewTimer = qt.QTimer(); self._previewTimer.setSingleShot(True); self._previewTimer.setInterval(250)
     self._previewTimer.timeout.connect(self._onPreview)
     self.spacing.valueChanged.connect(lambda v: self._previewTimer.start())
 
-    # Run
-    self.runBtn = qt.QPushButton("Run BUILDER"); self.runBtn.enabled = False
-    lay.addRow(self.runBtn)
+    runBox = ctk.ctkCollapsibleButton(); runBox.text = "Run + Status"; runBox.collapsed = False
+    runLay = qt.QFormLayout(runBox); lay.addRow(runBox)
+    self.runBtn = qt.QPushButton("Run BUILDER Pipeline"); self.runBtn.enabled = False
+    runLay.addRow(self.runBtn)
 
     # Log
-    self.log = qt.QPlainTextEdit(); self.log.setReadOnly(True); lay.addRow(self.log)
+    self.log = qt.QPlainTextEdit(); self.log.setReadOnly(True); runLay.addRow(self.log)
 
     # Signals
     self.createAtlasRadio.toggled.connect(self._toggleAtlasLoad)
@@ -108,7 +122,11 @@ class BUILDERWidget(ScriptedLoadableModuleWidget):
     self.log.appendPlainText(msg)
     try: slicer.util.showStatusMessage(msg, 2500)
     except Exception: pass
-    qt.QApplication.processEvents()
+    now = time.monotonic()
+    last = getattr(self, "_lastStatusProcessTs", 0.0)
+    if ("completed" in msg.lower()) or ("failed" in msg.lower()) or (now - last >= 0.10):
+      qt.QApplication.processEvents()
+      self._lastStatusProcessTs = now
 
   def _toggleAtlasLoad(self):
     useLoad = self.loadAtlasRadio.isChecked()
@@ -123,6 +141,14 @@ class BUILDERWidget(ScriptedLoadableModuleWidget):
     self.runBtn.enabled = bool(atlasOK and ioOK)
     hasRef = (self.loadAtlasRadio.isChecked() and bool(self.atlasModelPath.currentPath)) or bool(self.modelDir.currentPath)
     self.previewBtn.enabled = hasRef
+    if not atlasOK and not ioOK:
+      self.prereqLabel.setText("Status: BLOCKED - choose atlas source/files and input/output directories.")
+    elif not atlasOK:
+      self.prereqLabel.setText("Status: BLOCKED - choose atlas creation mode or load atlas model + landmarks.")
+    elif not ioOK:
+      self.prereqLabel.setText("Status: BLOCKED - select model, landmark, and output directories.")
+    else:
+      self.prereqLabel.setText("Status: READY - required inputs are complete.")
     self._invalidatePreviewCache()
 
   def _invalidatePreviewCache(self, *_):
@@ -210,6 +236,7 @@ class BUILDERWidget(ScriptedLoadableModuleWidget):
 
     # 3) Save atlas + export dense
     logic.saveAtlasOnly(atlasModel, atlasLMs, F['atlas'])
+    dense_ok = True
     try:
       self._status(f"Exporting dense correspondences using {method.upper()} projection…")
       logic.exportDenseLMs(
@@ -222,17 +249,24 @@ class BUILDERWidget(ScriptedLoadableModuleWidget):
         progress=lambda msg: self._status(msg)
       )
     except Exception as e:
+      dense_ok = False
       self._status(f"Dense export failed: {e}")
     slicer.mrmlScene.RemoveNode(atlasModel); slicer.mrmlScene.RemoveNode(atlasLMs)
-    self._status(f"Done. Output: {F['output']} (atlas/, population_correspondences/, alignedModels/, alignedLMs/)")
+    if dense_ok:
+      self._status(f"Completed. Output: {F['output']} (atlas/, population_correspondences/, alignedModels/, alignedLMs/)")
+    else:
+      self._status(f"Completed with warnings. Output: {F['output']} (atlas/, alignedModels/, alignedLMs/). Dense export did not finish.")
 
   def _generateAtlas(self, F, useSimilarity, warp_method, allowFallback):
     logic = self.logic
     closest_key = logic.getClosestToMeanPath(F['originalLMs'])
-    lm_path = logic._resolve_by_key(F['originalLMs'], closest_key, ('.mrk.json', '.fcsv', '.json'))
+    model_index = logic._list_keys(F['originalModels'], ('.ply', '.stl', '.vtp', '.vtk', '.obj'))
+    lm_index = logic._list_keys(F['originalLMs'], ('.mrk.json', '.fcsv', '.json'))
+    lm_path = lm_index.get(str(closest_key).lower())
     if not lm_path: raise ValueError(f"Could not resolve LM file for key '{closest_key}'")
     baseLM = slicer.util.loadMarkups(lm_path)
-    baseModel = logic.getModelFileByID(F['originalModels'], closest_key)
+    model_path = model_index.get(str(closest_key).lower())
+    baseModel = slicer.util.loadModel(model_path) if model_path else None
     if not baseModel: raise ValueError(f"Could not resolve model for key '{closest_key}'")
     self._status(f"Closest sample to mean: {closest_key}")
 
@@ -286,21 +320,23 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
     g.Update()
     return names, g.GetOutput()
   
-  def _median_abs_signed_distance(self, pd, pts_np):
-    if pd is None or pd.GetNumberOfPoints()==0 or pts_np.size==0:
+  def _median_abs_signed_distance(self, ipd, pts_np):
+    if ipd is None or pts_np.size==0:
       return float('inf')
-    ipd = vtk.vtkImplicitPolyDataDistance()
-    base = self.cleanPolyData(pd, tri=True, normals=False)
-    if base.GetNumberOfPoints()==0:
-      return float('inf')
-    ipd.SetInput(base)
     return float(np.median([abs(ipd.EvaluateFunction(float(p[0]), float(p[1]), float(p[2]))) for p in pts_np]))
 
-  def _coord_check_ratio(self, pd, pts_np):
+  def _coord_check_ratio(self, pd, pts_np, threshold=None):
     diag = max(self._bbox_diag(pd), 1e-9)
-    r0 = self._median_abs_signed_distance(pd, pts_np) / diag
+    base = self.cleanPolyData(pd, tri=True, normals=False)
+    if base.GetNumberOfPoints()==0:
+      return float('inf'), float('inf')
+    ipd = vtk.vtkImplicitPolyDataDistance()
+    ipd.SetInput(base)
+    r0 = self._median_abs_signed_distance(ipd, pts_np) / diag
+    if threshold is not None and r0 <= threshold:
+      return r0, float('inf')
     pts_flip = pts_np.copy(); pts_flip[:,0]*=-1.0; pts_flip[:,1]*=-1.0
-    rflip = self._median_abs_signed_distance(pd, pts_flip) / diag
+    rflip = self._median_abs_signed_distance(ipd, pts_flip) / diag
     return r0, rflip
 
   def _key_no_ext(self, f):
@@ -319,14 +355,6 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
         return os.path.join(directory, f)
     return None
 
-  def getModelFileByID(self, directory, subjectID):
-    p = self._resolve_by_key(directory, subjectID, ('.ply','.stl','.vtp','.vtk','.obj'))
-    return slicer.util.loadModel(p) if p else None
-
-  def getLandmarkFileByID(self, directory, subjectID):
-    p = self._resolve_by_key(directory, subjectID, ('.mrk.json','.fcsv','.json'))
-    return slicer.util.loadMarkups(p) if p else None
-
   def _list_keys(self, d, ok_exts):
     out={}
     for f in os.listdir(d):
@@ -334,7 +362,12 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
       if fl.endswith(tuple(ok_exts)): out[self._key_no_ext(f).lower()] = os.path.join(d,f)
     return out
 
-  def importPaired(self, modelsDir, lmsDir):
+  def _load_clean_model_polydata(self, modelPath, *, normals=False):
+    mnode = slicer.util.loadModel(modelPath)
+    mpd = vtk.vtkPolyData(); mpd.DeepCopy(mnode.GetPolyData()); slicer.mrmlScene.RemoveNode(mnode)
+    return self.cleanPolyData(mpd, tri=True, merge_tol=0.0, smooth_iter=0, normals=normals)
+
+  def importPaired(self, modelsDir, lmsDir, *, normals=False):
     md = self._list_keys(modelsDir, ('.ply','.stl','.vtp','.vtk','.obj'))
     ld = self._list_keys(lmsDir,    ('.mrk.json','.fcsv','.json'))
     keys = sorted(set(md) & set(ld))
@@ -342,8 +375,7 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
     gl = vtk.vtkMultiBlockDataGroupFilter()
     names=[]
     for k in keys:
-      mnode = slicer.util.loadModel(md[k]); mpd = vtk.vtkPolyData(); mpd.DeepCopy(mnode.GetPolyData()); slicer.mrmlScene.RemoveNode(mnode)
-      mpd = self.cleanPolyData(mpd, tri=True, merge_tol=0.0, smooth_iter=0, normals=True)
+      mpd = self._load_clean_model_polydata(md[k], normals=normals)
       gm.AddInputData(mpd)
       lnode = slicer.util.loadMarkups(ld[k]); gl.AddInputData(self.fiducialNodeToPolyData(lnode, load=False)); slicer.mrmlScene.RemoveNode(lnode)
       names.append(k)
@@ -535,6 +567,14 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
       t2 = vtk.vtkThinPlateSplineTransform(); t2.SetSourceLandmarks(baseLM); t2.SetTargetLandmarks(mean); t2.SetBasisToR()
       f2 = vtk.vtkTransformPolyDataFilter(); f2.SetInputData(baseMesh); f2.SetTransform(t2); f2.Update()
       bWarp = f2.GetOutput()
+    
+    bWarpPts_np = vtk_np.vtk_to_numpy(bWarp.GetPoints().GetData()).astype(np.float64, copy=False)
+    bad = ~np.isfinite(bWarpPts_np).all(axis=1)
+    if bad.any():
+      raise ValueError(
+        f"Template warp to mean produced {int(bad.sum())} non-finite vertices. "
+        "This usually means the base mesh has NaN/Inf coordinates or the base sparse landmarks are duplicate/degenerate for TPS."
+      )
 
     bWarpPts = bWarp.GetPoints(); basePolys = bWarp.GetPolys()
     grp = vtk.vtkMultiBlockDataGroupFilter()
@@ -557,9 +597,16 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
     wpts = vtk_np.vtk_to_numpy(mWarp.GetPoints().GetData())
     finite_mask = np.all(np.isfinite(wpts), axis=1)
     clean_spec = wpts[finite_mask] if not np.all(finite_mask) else wpts
+    if clean_spec.shape[0] == 0:
+      raise ValueError("Warp produced no finite specimen points for KD-tree matching.")
 
     tree = cKDTree(clean_spec)
-    tmpl = vtk_np.vtk_to_numpy(bWarpPts.GetData())
+    tmpl = vtk_np.vtk_to_numpy(bWarpPts.GetData()).astype(np.float64, copy=False)
+    bad_tmpl = ~np.isfinite(tmpl).all(axis=1)
+    if bad_tmpl.any():
+      raise ValueError(
+        f"Template query points contain {int(bad_tmpl.sum())} non-finite rows before KD-tree search."
+      )
     try: distances, idxs = tree.query(tmpl, k=1, workers=-1)
     except TypeError: distances, idxs = tree.query(tmpl, k=1, n_jobs=-1)
     corr_np = clean_spec[idxs]
@@ -570,12 +617,19 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
 
   def computeAverageModelFromGroup(self, grp, baseIdx):
     n = grp.GetNumberOfBlocks()
-    m = grp.GetBlock(0).GetNumberOfPoints()
-    arr = np.empty((m,3,n), dtype=np.float32)
     base = grp.GetBlock(baseIdx)
+    if n == 0 or base is None or base.GetNumberOfPoints() == 0:
+      raise ValueError("computeAverageModelFromGroup: empty dense correspondence group.")
+    accum = None
     for i in range(n):
-      arr[:,:,i] = vtk_np.vtk_to_numpy(grp.GetBlock(i).GetPoints().GetData())
-    mean = np.mean(arr, axis=2)
+      blk = grp.GetBlock(i)
+      if blk is None or blk.GetNumberOfPoints() != base.GetNumberOfPoints():
+        raise ValueError("computeAverageModelFromGroup: inconsistent block sizes.")
+      pts = vtk_np.vtk_to_numpy(blk.GetPoints().GetData()).astype(np.float64, copy=False)
+      if accum is None:
+        accum = np.zeros_like(pts, dtype=np.float64)
+      accum += pts
+    mean = (accum / float(n)).astype(np.float32, copy=False)
     pts  = self.convertPointsToVTK(mean)
     out  = vtk.vtkPolyData(); out.SetPoints(pts.GetPoints()); out.SetPolys(base.GetPolys())
     return out
@@ -587,7 +641,7 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
     return poly
 
   def runMean(self, lmDir, meshDir, warp_method="tps", allow_fallback=True):
-    names, Ms, _, LMs = self.importPaired(meshDir, lmDir)
+    names, Ms, _, LMs = self.importPaired(meshDir, lmDir, normals=False)
     G, baseIdx, meanPts = self.denseCorrespondence(LMs, Ms, warp_method=warp_method, allow_fallback=allow_fallback)
     avg = self.computeAverageModelFromGroup(G, baseIdx)
     M = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelNode','Atlas Model'); M.CreateDefaultDisplayNodes(); M.SetAndObservePolyData(avg)
@@ -596,8 +650,11 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
     return M, L
 
   # -------- Alignment (preserve base names + extensions) --------
-  def _points_from_markups(self, node):
-    arr = slicer.util.arrayFromMarkupsControlPoints(node).astype(np.float64, copy=False)
+  def _points_from_markups(self, nodeOrArray):
+    if isinstance(nodeOrArray, np.ndarray):
+      arr = nodeOrArray.astype(np.float64, copy=False)
+    else:
+      arr = slicer.util.arrayFromMarkupsControlPoints(nodeOrArray).astype(np.float64, copy=False)
     pts = vtk.vtkPoints(); pts.SetData(vtk_np.numpy_to_vtk(arr, deep=True))
     return pts
 
@@ -607,8 +664,11 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
     scratch = None; model_scratch = None
     md = self._list_keys(meshDir, ('.ply', '.stl', '.vtp', '.vtk', '.obj'))
     ld = self._list_keys(lmDir,  ('.mrk.json', '.fcsv', '.json'))
+    sd = self._list_keys(slmDir, ('.mrk.json', '.fcsv', '.json')) if semis else {}
     keys = sorted(set(md) & set(ld))
     total = len(keys); done = 0
+    if total == 0:
+      raise ValueError("No matching model/landmark file pairs found.")
 
     try:
       try: slicer.app.setRenderPaused(True)
@@ -622,11 +682,14 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
       if model_scratch.GetDisplayNode():
         model_scratch.GetDisplayNode().SetVisibility(False)
 
-      tgt_pts = self._points_from_markups(baseLMNode)
+      tgt_arr = slicer.util.arrayFromMarkupsControlPoints(baseLMNode).astype(np.float64, copy=False)
+      tgt_pts = self._points_from_markups(tgt_arr)
       tf = vtk.vtkLandmarkTransform(); tpf = vtk.vtkTransformPolyDataFilter()
+      threshold = 0.03
+      last_ui_pump = 0.0
 
       for sid in keys:
-        lmNode = self.getLandmarkFileByID(lmDir, sid)
+        lmNode = slicer.util.loadMarkups(ld[sid])
         modelNode = slicer.util.loadModel(md[sid])
 
         if lmNode.GetNumberOfControlPoints() != baseLMNode.GetNumberOfControlPoints():
@@ -643,14 +706,13 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
           raise ValueError(f"[{sid}] Empty mesh or landmark set.")
 
         lm_arr = slicer.util.arrayFromMarkupsControlPoints(lmNode).astype(np.float64, copy=False)
-        r0, rflip = self._coord_check_ratio(mesh_pd, lm_arr)
-        threshold = 0.03
+        r0, rflip = self._coord_check_ratio(mesh_pd, lm_arr, threshold=threshold)
         if not allowCoordMismatch and r0 > threshold:
           hint = " Likely LPS landmarks (X,Y need sign flip)." if (rflip < 0.5*r0 and rflip < threshold) else ""
           slicer.mrmlScene.RemoveNode(lmNode)
           raise ValueError(f"[{sid}] Landmark↔mesh coordinate mismatch: median surface distance ≈ {r0*100:.1f}% of bbox diag.{hint} Set 'Override landmark↔mesh coordinate check' to proceed.")
 
-        src_pts = self._points_from_markups(lmNode)
+        src_pts = self._points_from_markups(lm_arr)
         tf.SetModeToSimilarity() if useSimilarity else tf.SetModeToRigidBody()
         tf.SetSourceLandmarks(src_pts); tf.SetTargetLandmarks(tgt_pts); tf.Update()
         tpf.SetInputData(mesh_pd); tpf.SetTransform(tf); tpf.Update()
@@ -663,8 +725,7 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
         slicer.util.saveNode(model_scratch, os.path.join(outMeshDir, f"{sid}{ext}"))
 
         # Transform and save landmarks (keep base name)
-        lm = slicer.util.arrayFromMarkupsControlPoints(lmNode).astype(np.float64, copy=False)
-        lm_h = np.hstack((lm, np.ones((lm.shape[0], 1), dtype=np.float64)))
+        lm_h = np.hstack((lm_arr, np.ones((lm_arr.shape[0], 1), dtype=np.float64)))
         M = vtk.vtkMatrix4x4(); tf.GetMatrix(M)
         Mn = np.array([[M.GetElement(r,c) for c in range(4)] for r in range(4)], dtype=np.float64)
         aligned = (Mn @ lm_h.T).T[:, :3]
@@ -674,7 +735,8 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
         slicer.mrmlScene.RemoveNode(lmNode)
 
         if semis:
-          slm = self.getLandmarkFileByID(slmDir, sid)
+          slm_path = sd.get(sid)
+          slm = slicer.util.loadMarkups(slm_path) if slm_path else None
           if slm:
             slm_arr = slicer.util.arrayFromMarkupsControlPoints(slm).astype(np.float64, copy=False)
             slm_h = np.hstack((slm_arr, np.ones((slm_arr.shape[0], 1), dtype=np.float64)))
@@ -686,7 +748,10 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
 
         done += 1
         if progress: progress(done, total, sid)
-        qt.QApplication.processEvents()
+        now = time.monotonic()
+        if done == total or (now - last_ui_pump >= 0.10):
+          qt.QApplication.processEvents()
+          last_ui_pump = now
 
     finally:
       if scratch: slicer.mrmlScene.RemoveNode(scratch)
@@ -700,47 +765,109 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
     return float(np.linalg.norm([b[1]-b[0], b[3]-b[2], b[5]-b[4]]))
 
   def sample_indices_poisson(self, pd, frac):
-    tri = vtk.vtkTriangleFilter(); tri.SetInputData(pd); tri.PassLinesOff(); tri.PassVertsOff(); tri.Update()
-    idf = vtk.vtkIdFilter(); idf.PointIdsOn(); idf.SetPointIdsArrayName("origIds"); idf.SetInputData(tri.GetOutput()); idf.Update()
+    tri = vtk.vtkTriangleFilter()
+    tri.SetInputData(pd)
+    tri.PassLinesOff()
+    tri.PassVertsOff()
+    tri.Update()
+    tri_pd = tri.GetOutput()
+
     try:
-      ps = vtk.vtkPoissonDiskSampler(); ps.SetRadius(max(1e-9, float(frac))*self._bbox_diag(tri.GetOutput()))
-      ps.SetInputConnection(idf.GetOutputPort()); ps.Update()
-      arr = ps.GetOutput().GetPointData().GetArray("origIds")
-      return vtk_np.vtk_to_numpy(arr).astype(np.int64, copy=False) if arr else np.empty((0,), np.int64)
+      ids_name = "origIds"
+
+      if hasattr(vtk, "vtkGenerateIds"):
+        gen = vtk.vtkGenerateIds()
+        if hasattr(gen, "PointIdsOn"): gen.PointIdsOn()
+        if hasattr(gen, "CellIdsOff"): gen.CellIdsOff()
+        if hasattr(gen, "SetPointIdsArrayName"): gen.SetPointIdsArrayName(ids_name)
+        elif hasattr(gen, "SetIdsArrayName"): gen.SetIdsArrayName(ids_name)
+        gen.SetInputData(tri_pd)
+        gen.Update()
+        id_output = gen.GetOutputPort()
+
+      elif hasattr(vtk, "vtkIdFilter"):
+        idf = vtk.vtkIdFilter()
+        idf.PointIdsOn()
+        if hasattr(idf, "CellIdsOff"): idf.CellIdsOff()
+        idf.SetPointIdsArrayName(ids_name)
+        idf.SetInputData(tri_pd)
+        idf.Update()
+        id_output = idf.GetOutputPort()
+
+      else:
+        raise AttributeError("No VTK id-generation filter available")
+
+      if not hasattr(vtk, "vtkPoissonDiskSampler"):
+        raise AttributeError("vtkPoissonDiskSampler unavailable")
+
+      ps = vtk.vtkPoissonDiskSampler()
+      ps.SetRadius(max(1e-9, float(frac)) * self._bbox_diag(tri_pd))
+      ps.SetInputConnection(id_output)
+      ps.Update()
+
+      arr = ps.GetOutput().GetPointData().GetArray(ids_name)
+      if arr is not None:
+        return vtk_np.vtk_to_numpy(arr).astype(np.int64, copy=False)
+
     except Exception:
-      pts = vtk_np.vtk_to_numpy(pd.GetPoints().GetData()); n = pts.shape[0]
-      if n == 0: return np.empty((0,), np.int64)
-      r = max(1e-9, float(frac)) * self._bbox_diag(pd); kdt = cKDTree(pts)
-      remaining = np.ones(n, dtype=bool); out = []
-      c = pts.mean(axis=0); i0 = int(np.argmax(np.sum((pts - c)**2, axis=1))); stack = [i0]
-      while stack:
-        i = stack.pop()
-        if not remaining[i]: continue
-        out.append(i)
-        nbrs = kdt.query_ball_point(pts[i], r); remaining[nbrs] = False
-        if remaining.any(): stack.append(int(np.flatnonzero(remaining)[0]))
-      out.sort(); return np.array(out, dtype=np.int64)
+      pass
+
+    pts = vtk_np.vtk_to_numpy(tri_pd.GetPoints().GetData()).astype(np.float64, copy=False)
+    n = pts.shape[0]
+    if n == 0:
+      return np.empty((0,), np.int64)
+
+    r = max(1e-9, float(frac)) * self._bbox_diag(tri_pd)
+    kdt = cKDTree(pts)
+
+    remaining = np.ones(n, dtype=bool)
+    out = []
+
+    c = pts.mean(axis=0)
+    i0 = int(np.argmax(np.sum((pts - c)**2, axis=1)))
+    stack = [i0]
+
+    while stack:
+      i = stack.pop()
+      if not remaining[i]:
+        continue
+      out.append(i)
+      nbrs = kdt.query_ball_point(pts[i], r)
+      remaining[nbrs] = False
+      if remaining.any():
+        stack.append(int(np.flatnonzero(remaining)[0]))
+
+    out.sort()
+    return np.array(out, dtype=np.int64)
 
   def previewCountForRadius(self, polyDataOrNode, spacingPct):
     pd = polyDataOrNode if isinstance(polyDataOrNode, vtk.vtkPolyData) else polyDataOrNode.GetPolyData()
     keep_idx = self.sample_indices_poisson(pd, float(spacingPct)/100.0)
     return int(keep_idx.size), int(pd.GetNumberOfPoints())
 
+  def _build_surface_locator(self, mesh_pd):
+    loc = vtk.vtkStaticCellLocator()
+    loc.SetDataSet(mesh_pd)
+    loc.BuildLocator()
+    return loc
+
   def sparseCorrespondenceBaseMesh(self, LMs, meshes, atlasMesh, atlasLM, keep_idx, *,
-                                   warp_method="tps", allow_fallback=True, progress=None):
+                                  warp_method="tps", allow_fallback=True, progress=None, mesh_locators=None):
     keep_idx = np.asarray(keep_idx, np.int64)
     if keep_idx.size == 0: return []
 
     out=[]; N=LMs.GetNumberOfBlocks()
+    n_atlas_lm = int(atlasLM.GetNumberOfPoints())
     if warp_method == "biharmonic":
       if progress: progress("Warping entire atlas mesh → each specimen via BIHARMONIC, then projecting…")
       for i in range(N):
         lm_i = LMs.GetBlock(i).GetPoints()
+        if lm_i is None or int(lm_i.GetNumberOfPoints()) != n_atlas_lm:
+          raise ValueError(f"Landmark count mismatch for specimen {i+1}: expected {n_atlas_lm}, got {0 if lm_i is None else int(lm_i.GetNumberOfPoints())}.")
         warped_atlas = self.biharmonicWarpPolyData(atlasMesh, atlasLM, lm_i, allow_fallback=allow_fallback)
         V = vtk_np.vtk_to_numpy(warped_atlas.GetPoints().GetData())
         qInSpec = V[keep_idx].astype(np.float32, copy=False)
-        mtri = self.cleanPolyData(meshes.GetBlock(i), tri=True, normals=False)
-        loc = vtk.vtkStaticCellLocator(); loc.SetDataSet(mtri); loc.BuildLocator()
+        loc = mesh_locators[i] if mesh_locators is not None else self._build_surface_locator(meshes.GetBlock(i))
         outPts = vtk.vtkPoints(); outPts.SetNumberOfPoints(qInSpec.shape[0])
         hit=[0.,0.,0.]; cid=vtk.reference(0); sid=vtk.reference(0); d2=vtk.reference(0.0)
         for j in range(qInSpec.shape[0]):
@@ -756,13 +883,15 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
       for i,k in enumerate(keep_idx):
         aPts.GetPoint(int(k), tmp); qpts.SetPoint(i, tmp)
       for i in range(N):
+        lm_i = LMs.GetBlock(i).GetPoints()
+        if lm_i is None or int(lm_i.GetNumberOfPoints()) != n_atlas_lm:
+          raise ValueError(f"Landmark count mismatch for specimen {i+1}: expected {n_atlas_lm}, got {0 if lm_i is None else int(lm_i.GetNumberOfPoints())}.")
         t = vtk.vtkThinPlateSplineTransform()
-        t.SetSourceLandmarks(atlasLM); t.SetTargetLandmarks(LMs.GetBlock(i).GetPoints()); t.SetBasisToR()
+        t.SetSourceLandmarks(atlasLM); t.SetTargetLandmarks(lm_i); t.SetBasisToR()
         qPoly = vtk.vtkPolyData(); qPoly.SetPoints(qpts)
         f = vtk.vtkTransformPolyDataFilter(); f.SetInputData(qPoly); f.SetTransform(t); f.Update()
         qInSpec = f.GetOutput()
-        mesh_i = self.cleanPolyData(meshes.GetBlock(i), tri=True, normals=False)
-        loc = vtk.vtkStaticCellLocator(); loc.SetDataSet(mesh_i); loc.BuildLocator()
+        loc = mesh_locators[i] if mesh_locators is not None else self._build_surface_locator(meshes.GetBlock(i))
         outPts = vtk.vtkPoints(); outPts.SetNumberOfPoints(qInSpec.GetNumberOfPoints())
         qp = [0.0,0.0,0.0]; hit=[0.0,0.0,0.0]; cid=vtk.reference(0); sid=vtk.reference(0); d2=vtk.reference(0.0)
         for j in range(qInSpec.GetNumberOfPoints()):
@@ -787,44 +916,48 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
        or not _has_files(alignedLMsDir, ('.mrk.json', '.fcsv', '.json')):
       raise ValueError("No aligned models/landmarks found to export.")
 
-    try: slicer.app.setRenderPaused(True)
-    except Exception: pass
+    scratch = None
+    try:
+      try: slicer.app.setRenderPaused(True)
+      except Exception: pass
 
-    spacingFrac = float(spacingTolerance) / 100.0
-    keep_idx = self.sample_indices_poisson(atlasModelNode.GetPolyData(), spacingFrac)
-    if keep_idx.size == 0: raise ValueError("Sampling radius produced 0 template points. Reduce the radius and try again.")
+      spacingFrac = float(spacingTolerance) / 100.0
+      keep_idx = self.sample_indices_poisson(atlasModelNode.GetPolyData(), spacingFrac)
+      if keep_idx.size == 0: raise ValueError("Sampling radius produced 0 template points. Reduce the radius and try again.")
 
-    names, models, _, lms = self.importPaired(alignedModelsDir, alignedLMsDir)
-    if len(names) == 0: raise ValueError("No paired aligned models/landmarks found to export.")
+      names, models, _, lms = self.importPaired(alignedModelsDir, alignedLMsDir, normals=False)
+      if len(names) == 0: raise ValueError("No paired aligned models/landmarks found to export.")
+      mesh_locators = [self._build_surface_locator(models.GetBlock(i)) for i in range(models.GetNumberOfBlocks())]
 
-    baseLM_pts = self.fiducialNodeToPolyData(atlasLMNode, load=False).GetPoints()
-    if progress: progress(f"Computing specimen-space correspondences ({warp_method.upper()})…")
-    pts_list = self.sparseCorrespondenceBaseMesh(
-      lms, models, atlasModelNode.GetPolyData(), baseLM_pts, keep_idx,
-      warp_method=warp_method, allow_fallback=allow_fallback, progress=progress
-    )
+      baseLM_pts = self.fiducialNodeToPolyData(atlasLMNode, load=False).GetPoints()
+      if progress: progress(f"Computing specimen-space correspondences ({warp_method.upper()})…")
+      pts_list = self.sparseCorrespondenceBaseMesh(
+        lms, models, atlasModelNode.GetPolyData(), baseLM_pts, keep_idx,
+        warp_method=warp_method, allow_fallback=allow_fallback, progress=progress, mesh_locators=mesh_locators
+      )
 
-    scratch = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode', 'scratch_export')
-    scratch.SetHideFromEditors(True)
-    sd = scratch.GetDisplayNode()
-    if sd: sd.SetVisibility(False); sd.SetPointLabelsVisibility(False)
+      scratch = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLMarkupsFiducialNode', 'scratch_export')
+      scratch.SetHideFromEditors(True)
+      sd = scratch.GetDisplayNode()
+      if sd: sd.SetVisibility(False); sd.SetPointLabelsVisibility(False)
 
-    for i, arr in enumerate(pts_list):
+      for i, arr in enumerate(pts_list):
+        with slicer.util.NodeModify(scratch):
+          slicer.util.updateMarkupsControlPointsFromArray(scratch, arr)
+        slicer.util.saveNode(scratch, os.path.join(denseDir, f"{names[i]}.mrk.json"))
+        if progress: progress(f"Saved dense points for {names[i]}")
+
+      atlas_all = vtk_np.vtk_to_numpy(atlasModelNode.GetPolyData().GetPoints().GetData())
+      atlas_tpl = atlas_all[keep_idx].astype(np.float32, copy=False)
       with slicer.util.NodeModify(scratch):
-        slicer.util.updateMarkupsControlPointsFromArray(scratch, arr)
-      slicer.util.saveNode(scratch, os.path.join(denseDir, f"{names[i]}.mrk.json"))
-      if progress: progress(f"Saved dense points for {names[i]}")
-
-    atlas_all = vtk_np.vtk_to_numpy(atlasModelNode.GetPolyData().GetPoints().GetData())
-    atlas_tpl = atlas_all[keep_idx].astype(np.float32, copy=False)
-    with slicer.util.NodeModify(scratch):
-      slicer.util.updateMarkupsControlPointsFromArray(scratch, atlas_tpl)
-    slicer.util.saveNode(scratch, os.path.join(atlasDir, "atlas_dense_correspondences.mrk.json"))
-    if progress: progress("Saved template points to atlas/atlas_dense_correspondences.mrk.json")
-
-    slicer.mrmlScene.RemoveNode(scratch)
-    try: slicer.app.setRenderPaused(False)
-    except Exception: pass
+        slicer.util.updateMarkupsControlPointsFromArray(scratch, atlas_tpl)
+      slicer.util.saveNode(scratch, os.path.join(atlasDir, "atlas_dense_correspondences.mrk.json"))
+      if progress: progress("Saved template points to atlas/atlas_dense_correspondences.mrk.json")
+    finally:
+      if scratch:
+        slicer.mrmlScene.RemoveNode(scratch)
+      try: slicer.app.setRenderPaused(False)
+      except Exception: pass
 
   # -------- Misc helpers --------
   def _harden_if_parented(self, node):

@@ -19,6 +19,7 @@ include(${Slicer_USE_FILE})
 add_subdirectory(PREDICT)
 add_subdirectory(BUILDER)
 add_subdirectory(DATABASE)
+add_subdirectory(SEGMENTATION)
 
 
 

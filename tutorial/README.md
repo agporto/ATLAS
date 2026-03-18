@@ -143,7 +143,7 @@ Adjust model views and positions on PC sliders to visualize morphological change
 ## PREDICT
 Use the SSM database from `DATABASE` to predict landmark positions on new specimens. 
 
-### Step 1. `Prepare`: Ensure SSM is loaded following `DATABASE` ⟶ Step 3 above.
+### Step 1. `Prepare`: Ensure SSM is loaded following [`DATABASE` ⟶ Step 3 above](https://github.com/aubricot/ATLAS-seg/tree/tutorial/tutorial#step-3-database-library-load-database-into-atlas).
 
 ### Step 2. `Single Run`: Run landmark prediction for a single target mesh.
 * **Template Model**: <your_ssm>_template

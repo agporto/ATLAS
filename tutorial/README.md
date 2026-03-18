@@ -91,6 +91,10 @@ Progress will be reported in the window below `Run BUILDER Pipeline` and a model
 <img src="images/7.png" width = 500>
 </p>
 
+<p align="center">
+<img src="images/6a.png" width = 500>
+</p>
+
 If everything worked, you will see something indicating saved outputs and their locations.
 
 <p align="center">
@@ -101,6 +105,10 @@ If everything worked, you will see something indicating saved outputs and their 
 Use atlas and dense correspondences from `BUILDER` to make a PCA-based statistical shape model (SSM) database. 
 
 ### Step 1. `Database Library`: Specify `Database location` output from `BUILDER` (ex: atlas_out/YYYY_MM-DD_HH_MM_SS). 
+
+<p align="center">
+<img src="images/8a.png" width = 500>
+</p>
 
 ### Step 2. `Ingest New SSM`: Select corresponding files and folders found within `Database location` above.
 * **Template Model**: atlas/atlas_model.ply
@@ -151,7 +159,12 @@ Use the SSM database from `DATABASE` to predict landmark positions on new specim
 * **Template Landmarks**: <your_ssm>_template_sparse_landmarks
 * **Target model**: Choose a model to predict landmarks for
 * **SSM Data Table**: ssm_data_<your_ssm>
-   
+
+Load a model to predict landmarks for into your Scene using the 3D Slicer Add Data button. 
+<p align="center">
+<img src="images/13a.png" width = 500>
+</p>
+  
 <p align="center">
 <img src="images/14.png" width = 500>
 </p>

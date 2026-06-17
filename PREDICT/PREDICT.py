@@ -175,7 +175,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     {"key":"w","kind":"dspin","label":"Outlier weight (w)","section":"PCA-CPD registration","min":0.0,"max":0.5,"step":0.01,"value":0.10,"decimals":3},
     {"key":"tolerance","kind":"dspin","label":"Tolerance","section":"PCA-CPD registration","min":1e-8,"max":1e-2,"step":1e-6,"value":1e-6,"decimals":8},
     {"key":"max_iterations","kind":"spin","label":"Max iterations","section":"PCA-CPD registration","min":100,"max":1000,"step":50,"value":250},
-    {"key":"lambda_reg","kind":"dspin","label":"SSM weight (lambda_reg)","section":"PCA-CPD registration","min":0.0,"max":5.0,"step":0.05,"value":0.4}
+    {"key":"lambda_reg","kind":"dspin","label":"SSM weight (lambda_reg)","section":"PCA-CPD registration","min":0.0,"max":5.0,"step":0.01,"value":0.01}
   ]
 
   def _make_selector(self, types, attr_key=None, attr_val=None, tooltip=None, none=False):

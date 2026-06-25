@@ -125,7 +125,9 @@ On first use of PREDICT, a dialog offers to install:
 
 ---
 ## Tutorials & Learning Resources
-Dedicated ATLAS tutorials are forthcoming. In the meantime:
+* ATLAS Tutorial: https://github.com/agporto/ATLAS/blob/main/tutorial/README.md 
+
+See other userful resources:
 * Use SlicerMorph tutorials for general data prep & landmark management: https://github.com/SlicerMorph/Tutorials
 * Explore parameter effects: run PREDICT Single mode on a representative specimen and inspect each intermediate node.
 

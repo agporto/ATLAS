@@ -222,9 +222,10 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
       labV = self._smooth_labels(V, F, labV, smooth_iters)
       if write_vtp:
         #self._write_vtp_with_labels_world(meshPath, out_dir, labV, labV); wrote += 1 # TO DO
-        self._write_ply_segments(meshPath, out_dir, labV); wrote += 1
+        self._write_ply_segments(pdW, out_dir, labV, os.path.basename(meshPath)); wrote += 1
       if i < previewN:
-        self._preview_in_scene(meshPath, labV)
+        # self._preview_in_scene(meshPath, labV) # TO DO
+        self._preview_in_scene(n_name=os.path.splitext(os.path.basename(meshPath))[0], labV=labV, pdW=pdW)
 
     self._save_labels_lookup(out_dir, labels)
 
@@ -486,80 +487,45 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
     slicer.mrmlScene.RemoveNode(n)
 
 # TO DO: added func to output ply segments
-  def _write_ply_segments(self, meshPath, out_dir, labels):
-    n = self._load_model_node(meshPath)
-    pd = self._polydata_world(n)
-    # attach labels as active point scalars
-    arr = vtk_np.numpy_to_vtk(labels.astype(np.int32), deep=True, array_type=vtk.VTK_INT)
-    arr.SetName("SegID")
-    pd.GetPointData().SetScalars(arr)
-    base = os.path.splitext(os.path.basename(meshPath))[0]
-    for seg in np.unique(labels):
-        if seg < 0:
-            continue  # optional: skip background
-        t = vtk.vtkThreshold()
-        t.SetInputData(pd)
-        # make sure we threshold on point scalars "SegID"
-        t.SetInputArrayToProcess(
-            0, 0, 0,
-            vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS,
-            "SegID"
-        )
-        # tighter bounds are safer than exact equality in floating pipelines
-        t.SetLowerThreshold(float(seg) - 0.5) 
-        t.SetUpperThreshold(float(seg) + 0.5)
-        t.Update()
-        g = vtk.vtkGeometryFilter()
-        g.SetInputConnection(t.GetOutputPort())
-        g.Update()
-        out_path = os.path.join(out_dir, f"{base}_seg_{int(seg):02d}.ply")
-        w = vtk.vtkPLYWriter()
-        w.SetFileName(out_path)
-        w.SetInputData(g.GetOutput())
-        w.SetFileTypeToBinary()
-        w.Write()
-    slicer.mrmlScene.RemoveNode(n)
+  def _write_ply_segments(self, pdW, out_dir, labels, meshBasename):
+      pd = vtk.vtkPolyData(); pd.DeepCopy(pdW)
+      arr = vtk_np.numpy_to_vtk(labels.astype(np.int32), deep=True, array_type=vtk.VTK_INT)
+      arr.SetName("SegID"); pd.GetPointData().SetScalars(arr)
+      base = os.path.splitext(meshBasename)[0]
+      for seg in np.unique(labels):
+          if seg < 0: continue
+          t = vtk.vtkThreshold(); t.SetInputData(pd)
+          t.SetInputArrayToProcess(0,0,0,vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS,"SegID")
+          t.SetLowerThreshold(float(seg)-0.5); t.SetUpperThreshold(float(seg)+0.5); t.Update()
+          g = vtk.vtkGeometryFilter(); g.SetInputConnection(t.GetOutputPort()); g.Update()
+          nf = vtk.vtkPolyDataNormals(); nf.SetInputConnection(g.GetOutputPort())
+          nf.SplittingOff(); nf.ConsistencyOn(); nf.Update()
+          w = vtk.vtkPLYWriter()
+          w.SetFileName(os.path.join(out_dir, f"{base}_seg_{int(seg):02d}.ply"))
+          w.SetInputConnection(nf.GetOutputPort()); w.SetFileTypeToBinary(); w.Write()
 
-  def _preview_in_scene(self, meshPath, labV):
-    n = self._load_model_node(meshPath)
-    if n is None: return
-    base = os.path.splitext(os.path.basename(meshPath))[0]
-    n.SetName(f"{base}_seg_preview")
-    if n.GetParentTransformNode(): n.HardenTransform()
-
-    pd = n.GetPolyData()
-    a = vtk_np.numpy_to_vtk(labV, deep=True, array_type=vtk.VTK_INT); a.SetName("SegID_smooth")
-    pd.GetPointData().AddArray(a)
-    pd.GetPointData().SetActiveScalars("SegID_smooth")
-    pd.Modified()
-
-    dn = n.GetDisplayNode()
-    if not dn:
+  def _preview_in_scene(self, n_name, labV, pdW):
+      pd = vtk.vtkPolyData(); pd.DeepCopy(pdW)
+      nf = vtk.vtkPolyDataNormals(); nf.SetInputData(pd)
+      nf.SplittingOff(); nf.ConsistencyOn(); nf.Update()
+      pd = nf.GetOutput()
+      a = vtk_np.numpy_to_vtk(labV, deep=True, array_type=vtk.VTK_INT); a.SetName("SegID_smooth")
+      pd.GetPointData().AddArray(a); pd.GetPointData().SetActiveScalars("SegID_smooth")
+      n = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode")
+      n.SetName(f"{n_name}_seg_preview")
+      n.SetAndObservePolyData(pd)
       n.CreateDefaultDisplayNodes()
       dn = n.GetDisplayNode()
-
-    # attach color table
-    ctn = self._ensure_color_table("SEGMENTATION_Colors", int(labV.max()+1))
-    if hasattr(dn, "SetAndObserveColorNodeID"):
-      dn.SetAndObserveColorNodeID(ctn.GetID())
-
-    # prefer color-node-driven range if supported; else use data range [0, k-1]
-    try:
-      flag = getattr(dn, "ScalarRangeFlagUseColorNode", None)
-      if flag is not None:
-        dn.SetScalarRangeFlag(flag)
-      else:
-        k = max(int(labV.max()+1), 1)
-        dn.SetScalarRange(0.0, float(k-1))
-        dn.SetAutoScalarRange(False)
-    except Exception:
       k = max(int(labV.max()+1), 1)
-      dn.SetScalarRange(0.0, float(k-1))
-      dn.SetAutoScalarRange(False)
-
-    dn.SetScalarVisibility(True)
-
-
+      ctn = self._ensure_color_table("SEGMENTATION_Colors", k)
+      if hasattr(dn, "SetAndObserveColorNodeID"): dn.SetAndObserveColorNodeID(ctn.GetID())
+      try:
+          flag = getattr(dn, "ScalarRangeFlagUseColorNode", None)
+          if flag is not None: dn.SetScalarRangeFlag(flag)
+          else: dn.SetScalarRange(0.0, float(k-1)); dn.SetAutoScalarRange(False)
+      except Exception:
+          dn.SetScalarRange(0.0, float(k-1)); dn.SetAutoScalarRange(False)
+      dn.SetScalarVisibility(True)
 
   def _clear_preview_nodes(self):
     nodes=slicer.mrmlScene.GetNodesByClass("vtkMRMLModelNode")
@@ -929,3 +895,4 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
         f"Non-finite values in {what} of '{os.path.basename(path)}' "
         f"(first bad indices: {bad})."
       )
+

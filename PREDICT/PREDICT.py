@@ -275,7 +275,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.sourceModelSelector            = self._make_selector(["vtkMRMLModelNode"]) ; singleL.addRow("Template model:", self.sourceModelSelector)
     self.sourceFiducialSelector         = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; singleL.addRow("Template Correspondences:", self.sourceFiducialSelector)
     self.sourceSparseFiducialSelector   = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; singleL.addRow("Template Landmarks:", self.sourceSparseFiducialSelector)
-    self.targetModelSelector            = self._make_selector(["vtkMRMLModelNode"]) ; singleL.addRow("Target model:", self.targetModelSelector)
+    self.targetModelSelector            = self._make_selector(["vtkMRMLModelNode"], none=True) ; singleL.addRow("Target model:", self.targetModelSelector)
     self.ssmTableSelector               = self._make_selector(["vtkMRMLTableNode"], attr_key="ssm_eigenvalues", attr_val=None, tooltip="If you have an SSM table loaded, select it here to use PCA-CPD.") ; singleL.addRow("SSM Data Table:", self.ssmTableSelector)
     self.subsampleButton=qt.QPushButton("1) Subsample source/target"); self.subsampleButton.enabled=False; singleL.addRow(self.subsampleButton)
     self.subsampleInfo=qt.QPlainTextEdit(); self.subsampleInfo.setPlaceholderText("Subsampling information"); self.subsampleInfo.setReadOnly(True); singleL.addRow(self.subsampleInfo)
@@ -383,6 +383,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.optimizeButton.clicked.connect(self.onOptimize)
 
     self.onSelect(); self.onSelectMultiProcess(); self._enable_optimize(); self.parameterDictionary=self._read_params()
+    self._set_default_nodes()
     self.layout.addStretch(1)
 
   # ----- Small helpers -----
@@ -474,6 +475,31 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     if not shNode: return
     if getattr(self, "cloneFolderItemID", None): shNode.RemoveItem(self.cloneFolderItemID)
     self.cloneFolderItemID = None
+
+  def _find_node(self, node_class, substring):
+    col = slicer.mrmlScene.GetNodesByClass(node_class)
+    for i in range(col.GetNumberOfItems()):
+        node = col.GetItemAsObject(i)
+        name = node.GetName() or ""
+        if substring.lower() in name.lower():
+            return node
+    return None
+
+  def _set_default_nodes(self):
+    sparse_lm = self._find_node("vtkMRMLMarkupsFiducialNode", "template_sparse_landmarks")
+    if sparse_lm:
+        self.sourceSparseFiducialSelector.setCurrentNode(sparse_lm)
+        self.sourceSparseFiducialMultiSelector.setCurrentNode(sparse_lm)
+        self.d2sourceSparseFiducialSelector.setCurrentNode(sparse_lm)
+
+    ssm_table = self._find_node("vtkMRMLTableNode", "ssm_data")
+    if ssm_table:
+        self.ssmTableSelector.setCurrentNode(ssm_table)
+        self.ssmTableMultiSelector.setCurrentNode(ssm_table)
+        self.d2ssmTableSelector.setCurrentNode(ssm_table)
+
+    self.targetModelSelector.setCurrentNode(None)
+    self.d2targetModelSelector.setCurrentNode(None)
 
   def _hideInputNodes(self):
     for selector in (self.sourceModelSelector, self.sourceFiducialSelector, self.sourceSparseFiducialSelector, self.targetModelSelector):

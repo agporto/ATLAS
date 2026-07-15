@@ -40,9 +40,9 @@ class SEGMENTATIONWidget(ScriptedLoadableModuleWidget):
     basic = ctk.ctkCollapsibleButton(); basic.text = "Required Inputs"; basic.collapsed = False
     fb = qt.QFormLayout(basic); f.addRow(basic)
     self.meshDir=qt.QLineEdit(); b1=qt.QToolButton(); b1.text="…"; b1.clicked.connect(lambda:self._browse(self.meshDir))
-    h1=qt.QHBoxLayout(); h1.addWidget(self.meshDir); h1.addWidget(b1); fb.addRow("Meshes folder:",h1)
+    h1=qt.QHBoxLayout(); h1.addWidget(self.meshDir); h1.addWidget(b1); fb.addRow("Aligned Models folder:",h1)
     self.mrkDir=qt.QLineEdit(); b2=qt.QToolButton(); b2.text="…"; b2.clicked.connect(lambda:self._browse(self.mrkDir))
-    h2=qt.QHBoxLayout(); h2.addWidget(self.mrkDir); h2.addWidget(b2); fb.addRow("Dense Correspondences (.mrk.json) Folder:",h2)
+    h2=qt.QHBoxLayout(); h2.addWidget(self.mrkDir); h2.addWidget(b2); fb.addRow("Population Correspondences (.mrk.json) folder:",h2)
     self.outDir=qt.QLineEdit(); b3=qt.QToolButton(); b3.text="…"; b3.clicked.connect(lambda:self._browse(self.outDir))
     h3=qt.QHBoxLayout(); h3.addWidget(self.outDir); h3.addWidget(b3); fb.addRow("Output folder:",h3)
 

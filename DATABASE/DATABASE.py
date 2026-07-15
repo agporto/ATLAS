@@ -444,7 +444,7 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     if os.path.isdir(populationDir):
         self.ssmPopulationDirSelector.setCurrentPath(populationDir)
 
-    self.ssmNameEditor.setText("atlas_db")
+    self.ssmNameEditor.setText("")
 
     self.onSelect()
 

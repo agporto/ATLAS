@@ -424,6 +424,29 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
       settings = qt.QSettings()
       settings.setValue('DATABASE/databasePath', path)
       self.refreshDatabaseList()
+      self._prepopulateIngestFields(path)
+      
+  def _prepopulateIngestFields(self, rootDir):
+    atlasDir = os.path.join(rootDir, "atlas")
+
+    templateModel     = os.path.join(atlasDir, "atlas_model.ply")
+    denseCorr         = os.path.join(atlasDir, "atlas_dense_correspondences.mrk.json")
+    sparseLandmarks   = os.path.join(atlasDir, "atlas_sparse_landmarks.mrk.json")
+    populationDir     = os.path.join(rootDir,  "population_correspondences")
+
+    # Only set if the path actually exists, to avoid misleading red/invalid state
+    if os.path.isfile(templateModel):
+        self.ssmTemplateModelSelector.setCurrentPath(templateModel)
+    if os.path.isfile(denseCorr):
+        self.ssmTemplateLandmarksSelector.setCurrentPath(denseCorr)
+    if os.path.isfile(sparseLandmarks):
+        self.ssmSparseLandmarksSelector.setCurrentPath(sparseLandmarks)
+    if os.path.isdir(populationDir):
+        self.ssmPopulationDirSelector.setCurrentPath(populationDir)
+
+    self.ssmNameEditor.setText("")
+
+    self.onSelect()
 
   def refreshDatabaseList(self):
     self.databaseListWidget.clear()

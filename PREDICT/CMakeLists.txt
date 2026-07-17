@@ -4,6 +4,7 @@ set(MODULE_NAME PREDICT)
 #-----------------------------------------------------------------------------
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
+  PoseEMTemplate.py
   )
 
 set(MODULE_PYTHON_RESOURCES
@@ -24,4 +25,5 @@ if(BUILD_TESTING)
   # Register the unittest subclass in the main script as a ctest.
   # Note that the test will also be available at runtime.
   slicer_add_python_unittest(SCRIPT ${MODULE_NAME}.py)
+  slicer_add_python_unittest(SCRIPT Testing/Python/PoseEMTemplateTest.py)
 endif()

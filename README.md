@@ -94,7 +94,9 @@ ATLAS organizes functionality into four scripted modules:
 **Modes:**
 * Single specimen alignment (tune parameters, inspect intermediate clouds/models)  
 * Batch processing (reuse tuned parameters; cancellation + progress)  
-* Template optimization (continuous search in SSM space + RANSAC scoring to refine initial template pose/shape)  
+* Template optimization with two backends:
+  * **FPFH + RANSAC (current, default):** continuous SSM search scored by feature-based rigid registration.
+  * **Pose-marginalized EM (experimental):** deterministic global pose hypotheses followed by joint SSM-shape and similarity refinement under the CPD objective. The full warm state is passed into final atlas registration, avoiding a second global RANSAC search.
 
 **Outputs:** Predicted landmark `.mrk.json` files, warped template models (scene), optionally refined projected landmarks, and optional batch warped mesh exports as `.vtp` files.
 
@@ -115,7 +117,9 @@ ATLAS is pure Python + VTK within Slicer, with two external Python packages used
 ### Automatically Installed Python Packages
 On first use of PREDICT, a dialog offers to install:
 * **`tiny3d`** – lightweight point cloud / registration toolkit (Open3D style API)
-* **`biocpd`** – PCA‑guided CPD atlas registration
+* **`biocpd>=1.3.0`** – PCA‑guided CPD atlas registration and the experimental pose-marginalized initializer
+
+The pose-EM backend is opt-in. Existing installations and batch workflows continue to use the current FPFH + RANSAC optimizer unless the experimental backend is selected in PREDICT's Template Optimization tab. Pose-EM diagnostics report the best-score margin, posterior entropy/effective pose count, and the numbers of evaluated and refined hypotheses. A small score margin or a high effective pose count may indicate rotational ambiguity, especially for symmetric anatomy. Batch runs also save these diagnostics to `pose_em_diagnostics.json` in the landmark output directory.
 
 ---
 ## Related / Complementary Extensions
@@ -188,8 +192,5 @@ Enable `View > Error Log` in Slicer for stack traces; include logs in Issues.
 
 ---
 *Last updated:* 2025-08-23
-
-
-
 
 

@@ -236,8 +236,13 @@ These steps are especially important for macroevolutionary comparative analyses 
 * **Template Landmarks**: <your_ssm>_template_sparse_landmarks
 * **Target model**: Choose a model to predict landmarks for
 * **SSM Data Table**: ssm_data_<your_ssm>
+* **Optimization backend**:
+  * **FPFH + RANSAC (current)** preserves the established feature-based template search and remains the default.
+  * **Pose-marginalized EM (experimental)** evaluates deterministic global rotations, jointly refines SSM coefficients and similarity pose, and completes SSM registration from that warm state.
 
-This will either produce an optimized template or return that the baseline template was already a good fit.
+The current backend will either produce an optimized template or retain the baseline when it is already a good fit. The experimental backend produces a target-pose template and reports score margin, effective pose count, and evaluated/refined hypothesis counts. When that result is sent to `Single Run`, PREDICT recognizes that global pose is already available and uses an identity rigid handoff rather than repeating RANSAC.
+
+Pose-EM settings control the number of base rotations, coarse source/target samples, coarse SSM rank and iterations, the number of finalists, refinement target samples and iterations, the identity-pose prior, and the deterministic seed. The rotation lattice also includes near-identity shells, so the number of evaluated hypotheses is larger than the base-rotation value. For incomplete targets, PREDICT uses `Target completeness` to prescale the SSM and fixes scale during final atlas registration; inspect ambiguity diagnostics carefully because partial or symmetric anatomy may support several poses.
 
 <p align="center">
 <img src="images/23.png" width = 600>
@@ -280,16 +285,16 @@ This will either produce an optimized template or return that the baseline templ
 ### Step 5. `Batch`: Run landmark prediction for a directory of target meshes. 
 Use defaults or parameters chosen under `Template Optimization` and `Advanced` to run landmark prediction in batch mode.
 
-* **Source mesh**: GridRANSAC_TemplateModel
-* **Source Correspondences**: GridRANSAC_TemplateCorrespondences
-* **Source landmarks**: GridRANSAC_TemplateLandmarks
+* **Source mesh**: the database template, `GridRANSAC_TemplateModel`, or `PoseEM_TemplateModel`
+* **Source Correspondences**: the matching template correspondence node
+* **Source landmarks**: the matching template landmark node
 * **Target mesh directory**: folder with your meshes to be landmarked
 * **Target output landmark directory**: your output landmark directory name (ex: predictedLMs)
 * **Save warped meshes**: Defaults to False. Saves warped meshes used for landmark transfer.
 * **Warped mesh output directory**: If saving warped meshes, specify your warped mesh output landmark directory name (ex: warpedMeshes)
 * **Smooth exported warped meshes**: Defaults to False. If saving warped meshes, specify to smooth them.
 * **SSM Data Table**: ssm_data_<your_ssm>
-* **Skip template optimization**: Defaults to False. Skips template optimization. 
+* **Skip template optimization**: Defaults to False. Skips the backend selected in the Template Optimization tab. When pose EM is selected and optimization is enabled, batch mode uses its full warm state directly and does not run the global FPFH + RANSAC stage. Pose-EM batch diagnostics are saved as `pose_em_diagnostics.json` in the landmark output directory.
 
 <p align="center">
 <img src="images/24.png" width = 600>

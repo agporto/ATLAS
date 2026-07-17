@@ -12,6 +12,7 @@ try:
         optimization_backend,
         pose_em_enabled,
         run_pose_em_registration,
+        ssm_sample,
     )
 except ImportError:
     from .PoseEMTemplate import (
@@ -22,6 +23,7 @@ except ImportError:
         optimization_backend,
         pose_em_enabled,
         run_pose_em_registration,
+        ssm_sample,
     )
 
 # ---------- Small utilities----------
@@ -300,7 +302,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     if pose:
       self.optimizeButton.setText("Run Experimental Pose-EM Optimization")
       self.optimizeButton.setToolTip(
-        "Jointly initialize SSM coefficients and global similarity pose, then complete SSM registration."
+        "Use pose-marginalized registration to select an SSM template shape; standard rigid alignment still runs afterward."
       )
     else:
       self.optimizeButton.setText("Run Template Optimization")
@@ -418,7 +420,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
     self.poseOptimizationBox=ctk.ctkCollapsibleButton(); self.poseOptimizationBox.text="Experimental pose-EM settings"; self.poseOptimizationBox.collapsed=False
     poseOptL=qt.QFormLayout(self.poseOptimizationBox); optL.addRow(self.poseOptimizationBox)
-    poseHelp=qt.QLabel("Deterministic global rotation hypotheses are refined jointly with SSM shape and similarity pose. For partial targets, PREDICT fixes final scale after coverage-aware prescaling.")
+    poseHelp=qt.QLabel("Deterministic global rotation hypotheses are refined jointly with SSM shape and similarity pose. Only the selected SSM shape is applied to the template; standard scaling, rigid alignment, and deformable registration still run afterward.")
     poseHelp.setWordWrap(True); poseOptL.addRow(poseHelp)
     self.poseRotationCount=qt.QSpinBox(); self.poseRotationCount.minimum=12; self.poseRotationCount.maximum=512; self.poseRotationCount.value=96; self.poseRotationCount.setToolTip("Base SO(3) samples. Near-identity shells are added automatically."); poseOptL.addRow("Base rotations:", self.poseRotationCount)
     self.poseCoarseSourceCount=qt.QSpinBox(); self.poseCoarseSourceCount.minimum=20; self.poseCoarseSourceCount.maximum=10000; self.poseCoarseSourceCount.value=400; poseOptL.addRow("Coarse source points:", self.poseCoarseSourceCount)
@@ -620,20 +622,13 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
   def onSubsampleButton(self):
     logic = PREDICTLogic(); self._hideInputNodes()
     srcOrig = self.sourceModelSelector.currentNode(); tgtOrig = self.targetModelSelector.currentNode()
-    self.poseEMPrealigned = bool(
-      srcOrig.GetAttribute("PREDICT.pose_em_registered") == "1" and
-      (
-        srcOrig.GetAttribute("PREDICT.pose_em_target_id") == tgtOrig.GetID() or
-        srcOrig.GetAttribute("PREDICT.pose_em_target") == tgtOrig.GetName()
-      )
-    )
     corresOrig  = self.sourceFiducialSelector.currentNode(); lmOrig  = self.sourceSparseFiducialSelector.currentNode()
     self.clearCloneFolder(); run_label = f"{srcOrig.GetName()}→{tgtOrig.GetName()}"; self.ensureCloneFolder(label=run_label)
     self.srcTemp = self.cloneNode(srcOrig, customName="Source")
     self.tgtTemp = self.cloneNode(tgtOrig, customName="Target")
     self.corresTemp  = self.cloneNode(corresOrig,  customName="Source Correspondences")
     self.lmTemp  = self.cloneNode(lmOrig,  customName="Landmarks")
-    if not self.poseEMPrealigned and not self.parameterDictionary.get("skipScaling", False):
+    if not self.parameterDictionary.get("skipScaling", False):
         cov=float(self.parameterDictionary.get("targetCoverage",1.0))
         cov=float(np.clip(cov, 1e-3, 1.0))
         size_src=bounds_diag(self.srcTemp); size_tgt=bounds_diag(self.tgtTemp)
@@ -645,7 +640,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
         slicer.mrmlScene.RemoveNode(tn)
     else: self.scale = 1.0
     _, _, self.sourcePoints, self.targetPoints, self.sourceFeatures, self.targetFeatures, self.voxelSize = \
-      logic.runSubsample(self.srcTemp, self.tgtTemp, self.poseEMPrealigned or self.parameterDictionary.get("skipScaling", False), self.parameterDictionary)
+      logic.runSubsample(self.srcTemp, self.tgtTemp, self.parameterDictionary.get("skipScaling", False), self.parameterDictionary)
     if self.sourcePoints is None or self.targetPoints is None:
       slicer.util.errorDisplay("Subsampling failed. Check input files and logs."); return
     src_np = np.asarray(self.sourcePoints.points); tgt_np = np.asarray(self.targetPoints.points)
@@ -659,14 +654,8 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
   def onAlignButton(self):
     logic = PREDICTLogic()
-    if getattr(self, "poseEMPrealigned", False):
-      self.transformMatrix = np.eye(4, dtype=float)
-      slicer.util.showStatusMessage("Pose EM already supplied global pose; using identity rigid transform.", 3000)
-      transformName = 'Pose-EM Identity Handoff'
-    else:
-      self.transformMatrix = logic.estimateTransform(self.sourcePoints, self.targetPoints, self.sourceFeatures, self.targetFeatures, self.voxelSize, self.parameterDictionary)
-      transformName = 'Rigid Transformation Matrix'
-    self.ICPTransformNode = logic.convertMatrixToTransformNode(self.transformMatrix, transformName)
+    self.transformMatrix = logic.estimateTransform(self.sourcePoints, self.targetPoints, self.sourceFeatures, self.targetFeatures, self.voxelSize, self.parameterDictionary)
+    self.ICPTransformNode = logic.convertMatrixToTransformNode(self.transformMatrix, 'Rigid Transformation Matrix')
     self._parentNode(self.ICPTransformNode)
     self.sourceCloudNode = logic.displayPointCloud(self.sourceSLM_vtk, 'Source Pointcloud', COLORS["red"],  frac=0.004, refNode=self.tgtTemp)
     self.sourceCloudNode.SetAndObserveTransformNodeID(self.ICPTransformNode.GetID()); slicer.vtkSlicerTransformLogic().hardenTransform(self.sourceCloudNode)
@@ -699,21 +688,14 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
           return
       logic.rigidTransformNode = self.ICPTransformNode
 
-      if getattr(self, "poseEMPrealigned", False):
-          deformedLandmark_np = logic.runFineDeformable(
-              sourceLM=alignedSourceCorres_np,
-              targetSLM=self.targetPoints.points,
-              parameters=self.parameterDictionary,
-          )
-      else:
-          # SSM-guided deformable (PCA-CPD)
-          deformedLandmark_np = logic.runDeformable(
-              tableNode=tableNode,
-              sourceLM=alignedSourceCorres_np,
-              scale=self.scale,
-              targetSLM=self.targetPoints.points,
-              parameters=self.parameterDictionary
-          )
+      # SSM-guided deformable (PCA-CPD)
+      deformedLandmark_np = logic.runDeformable(
+          tableNode=tableNode,
+          sourceLM=alignedSourceCorres_np,
+          scale=self.scale,
+          targetSLM=self.targetPoints.points,
+          parameters=self.parameterDictionary
+      )
 
       # Preview warped correspondences
       if getattr(self, "deformedCloudNode", None):
@@ -918,9 +900,9 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
       rmse = info.get("rmse", None)
       nb   = info.get("norm_b", None)
 
-      if dec == "pose_em_registered":
+      if dec == "pose_em_template_chosen":
           self._log_opt(
-              "[pose-em] Registered template "
+              "[pose-em] Selected template shape "
               f"(||b||={nb:.3f}, scale={info['scale']:.4g}, size ratio={info['size_ratio']:.3f}, "
               f"score={info['score']:.3f}, margin={info['score_margin']:.3f}, "
               f"effective poses={info['effective_hypotheses']:.2f}, "
@@ -939,9 +921,9 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
       else:
           self._log_opt("[opt] Optimization finished (details unavailable).")
 
-      # Hand the optimized template to Single Run. Pose-EM outputs carry an
-      # attribute that makes the single-run rigid step use identity rather than
-      # repeating a global pose search.
+      # Hand the optimized, template-frame shape to Single Run. The regular
+      # scaling, rigid, and deformable stages remain unchanged for both
+      # optimization backends.
       self.sourceModelSelector.setCurrentNode(tplModel)
       self.sourceFiducialSelector.setCurrentNode(tplCorr)
       if tplLand: self.sourceSparseFiducialSelector.setCurrentNode(tplLand)
@@ -1022,99 +1004,85 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           if need_template_nodes:
             with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, corr_np)
             with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   lm_np)
-          backend = optimization_backend(parameters)
           pose_em = pose_em_enabled(parameters, skip_optimization=skipOpt)
-          if pose_em:
-            if cancel_callback and cancel_callback(): raise KeyboardInterrupt("Cancel requested")
-            if status_callback: status_callback(f"[{i+1}/{total}] Pose-EM initialization + SSM registration…")
-            target_points = self._pose_em_target_points(tgt_node, parameters)
-            deformed_corr, pose_result = self.runPoseEMDeformable(
-              tableNode=tableNode,
-              targetSLM=target_points,
-              parameters=parameters,
-              ssmData=ssmData,
-              includeFine=True,
-            )
-            aligned_corr = corr_np
-            pose_size_ratio = float(
-              np.linalg.norm(np.ptp(deformed_corr, axis=0)) /
-              max(np.linalg.norm(np.ptp(target_points, axis=0)), np.finfo(float).eps)
-            )
-            self.last_opt_info = {
-              "backend": POSE_EM_BACKEND,
-              "decision": "pose_em_registered",
-              "norm_b": float(np.linalg.norm(pose_result.coefficients)),
-              "score": float(pose_result.score),
-              "score_margin": float(pose_result.score_margin),
-              "posterior_entropy": float(pose_result.posterior_entropy),
-              "effective_hypotheses": float(pose_result.effective_hypotheses),
-              "hypotheses_evaluated": int(pose_result.hypotheses_evaluated),
-              "hypotheses_refined": int(pose_result.hypotheses_refined),
-              "scale": float(pose_result.scale),
-              "size_ratio": pose_size_ratio,
-            }
-            pose_entry = {
-              "target": fname,
-              "score": float(pose_result.score),
-              "score_margin": (
-                float(pose_result.score_margin)
-                if np.isfinite(pose_result.score_margin) else None
-              ),
-              "posterior_entropy": float(pose_result.posterior_entropy),
-              "effective_hypotheses": float(pose_result.effective_hypotheses),
-              "hypotheses_evaluated": int(pose_result.hypotheses_evaluated),
-              "hypotheses_refined": int(pose_result.hypotheses_refined),
-              "coefficient_norm": float(np.linalg.norm(pose_result.coefficients)),
-              "final_scale": float(pose_result.scale),
-              "size_ratio": pose_size_ratio,
-            }
-            if status_callback:
-              status_callback(
-                f"[{i+1}/{total}] Pose EM complete "
-                f"(margin={pose_result.score_margin:.3g}, effective poses={pose_result.effective_hypotheses:.2f})"
+          if not skipOpt:
+            if pose_em:
+              if cancel_callback and cancel_callback(): raise KeyboardInterrupt("Cancel requested")
+              if status_callback: status_callback(f"[{i+1}/{total}] Pose EM template-shape optimization…")
+              pose_result = self.initialize_template_pose_em(
+                tableNode, tpl_model, tpl_corr, tpl_lm, tgt_node,
+                parameters=parameters,
+                ssmData=ssmData,
               )
-          else:
-            if not skipOpt:
+              corr_np = slicer.util.arrayFromMarkupsControlPoints(tpl_corr).astype(np.float32, copy=True)
+              lm_np   = slicer.util.arrayFromMarkupsControlPoints(tpl_lm).astype(np.float32, copy=True)
+              pose_info = self.last_opt_info or {}
+              pose_entry = {
+                "target": fname,
+                "score": float(pose_result.score),
+                "score_margin": (
+                  float(pose_result.score_margin)
+                  if np.isfinite(pose_result.score_margin) else None
+                ),
+                "posterior_entropy": float(pose_result.posterior_entropy),
+                "effective_hypotheses": float(pose_result.effective_hypotheses),
+                "hypotheses_evaluated": int(pose_result.hypotheses_evaluated),
+                "hypotheses_refined": int(pose_result.hypotheses_refined),
+                "coefficient_norm": float(np.linalg.norm(pose_result.coefficients)),
+                "registration_scale": float(pose_result.scale),
+                "registration_size_ratio": float(pose_info.get("size_ratio", np.nan)),
+                "downstream_rigid": True,
+              }
+              if status_callback:
+                status_callback(
+                  f"[{i+1}/{total}] Pose EM selected template shape; continuing with standard rigid alignment "
+                  f"(margin={pose_result.score_margin:.3g}, effective poses={pose_result.effective_hypotheses:.2f})"
+                )
+            else:
               if status_callback: status_callback(f"[{i+1}/{total}] Optimize (SSM+RANSAC)…")
               k = int(parameters.get("opt_pcGridSteps", 4))
               rper = int(parameters.get("opt_ransac_per_cand", 300000))
               _b,_T=self.initialize_template(tableNode, tpl_model, tpl_corr, tpl_lm, tgt_node, parameters=parameters, k=k, span=3.0, optimizer="powell", max_evals=240, eval_ransac_iters=int(0.2 * rper), final_ransac_iters=rper, seed=0, ssmData=ssmData)
               corr_np = slicer.util.arrayFromMarkupsControlPoints(tpl_corr).astype(np.float32, copy=True)
               lm_np   = slicer.util.arrayFromMarkupsControlPoints(tpl_lm).astype(np.float32, copy=True)
-            else:
-              if status_callback: status_callback(f"[{i+1}/{total}] Skip optimization")
-            b_src=np.array(tpl_model.GetPolyData().GetBounds()).reshape(3,2); b_tgt=np.array(tgt_node.GetPolyData().GetBounds()).reshape(3,2)
-            size_src=np.linalg.norm(b_src[:,1]-b_src[:,0]); size_tgt=np.linalg.norm(b_tgt[:,1]-b_tgt[:,0])
-            cov=float(parameters.get("targetCoverage",1.0))
-            cov=float(np.clip(cov, 1e-3, 1.0))
-            if not skipScaling:
-              s=((size_tgt/cov)/size_src) if size_src>0 else 1.0
-              T_scale=np.eye(4, dtype=np.float32); T_scale[:3,:3]*=s
-              tpl_model.SetAndObservePolyData(_apply_pd_transform(tpl_model.GetPolyData(), T_scale))
-              Ms=T_scale
-            else:
-              s=1.0
-              Ms=np.eye(4, dtype=np.float32)
-            corr_np=_apply_M_to_np(corr_np, Ms)
-            lm_np  =_apply_M_to_np(lm_np,   Ms)
-            if need_runtime_nodes:
-              with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, corr_np)
-              with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   lm_np)
-            if cancel_callback and cancel_callback(): raise KeyboardInterrupt("Cancel requested")
-            if status_callback: status_callback(f"[{i+1}/{total}] Subsample & features…")
-            _src_pc,_tgt_pc,src_down,tgt_down,src_fpfh,tgt_fpfh,voxel=self.runSubsample(tpl_model, tgt_node, skipScaling, parameters)
-            if status_callback: status_callback(f"[{i+1}/{total}] RANSAC+ICP rigid…")
-            M_icp=_mat4(self.estimateTransform(src_down, tgt_down, src_fpfh, tgt_fpfh, voxel, parameters))
-            if need_final_mesh or use_bih:
-              tpl_model.SetAndObservePolyData(_apply_pd_transform(tpl_model.GetPolyData(), M_icp))
-            corr_np=_apply_M_to_np(corr_np, M_icp); lm_np=_apply_M_to_np(lm_np, M_icp)
-            if need_runtime_nodes:
-              with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, corr_np)
-              with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   lm_np)
-            if cancel_callback and cancel_callback(): raise KeyboardInterrupt("Cancel requested")
-            if status_callback: status_callback(f"[{i+1}/{total}] PCA-CPD deformable…")
-            aligned_corr=corr_np
-            deformed_corr=self.runDeformable(tableNode=tableNode, sourceLM=aligned_corr, scale=s, targetSLM=np.asarray(tgt_down.points), parameters=parameters, rigidMatrix=M_icp, ssmData=ssmData)
+          else:
+            if status_callback: status_callback(f"[{i+1}/{total}] Skip optimization")
+
+          # Both template optimizers return a shape in the template/SSM frame.
+          # Preserve the established downstream contract: scale, rigidly align,
+          # and run PCA-CPD regardless of which optimizer selected the shape.
+          b_src=np.array(tpl_model.GetPolyData().GetBounds()).reshape(3,2); b_tgt=np.array(tgt_node.GetPolyData().GetBounds()).reshape(3,2)
+          size_src=np.linalg.norm(b_src[:,1]-b_src[:,0]); size_tgt=np.linalg.norm(b_tgt[:,1]-b_tgt[:,0])
+          cov=float(parameters.get("targetCoverage",1.0))
+          cov=float(np.clip(cov, 1e-3, 1.0))
+          if not skipScaling:
+            s=((size_tgt/cov)/size_src) if size_src>0 else 1.0
+            T_scale=np.eye(4, dtype=np.float32); T_scale[:3,:3]*=s
+            tpl_model.SetAndObservePolyData(_apply_pd_transform(tpl_model.GetPolyData(), T_scale))
+            Ms=T_scale
+          else:
+            s=1.0
+            Ms=np.eye(4, dtype=np.float32)
+          corr_np=_apply_M_to_np(corr_np, Ms)
+          lm_np  =_apply_M_to_np(lm_np,   Ms)
+          if need_runtime_nodes:
+            with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, corr_np)
+            with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   lm_np)
+          if cancel_callback and cancel_callback(): raise KeyboardInterrupt("Cancel requested")
+          if status_callback: status_callback(f"[{i+1}/{total}] Subsample & features…")
+          _src_pc,_tgt_pc,src_down,tgt_down,src_fpfh,tgt_fpfh,voxel=self.runSubsample(tpl_model, tgt_node, skipScaling, parameters)
+          if status_callback: status_callback(f"[{i+1}/{total}] RANSAC+ICP rigid…")
+          M_icp=_mat4(self.estimateTransform(src_down, tgt_down, src_fpfh, tgt_fpfh, voxel, parameters))
+          if need_final_mesh or use_bih:
+            tpl_model.SetAndObservePolyData(_apply_pd_transform(tpl_model.GetPolyData(), M_icp))
+          corr_np=_apply_M_to_np(corr_np, M_icp); lm_np=_apply_M_to_np(lm_np, M_icp)
+          if need_runtime_nodes:
+            with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, corr_np)
+            with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   lm_np)
+          if cancel_callback and cancel_callback(): raise KeyboardInterrupt("Cancel requested")
+          if status_callback: status_callback(f"[{i+1}/{total}] PCA-CPD deformable…")
+          aligned_corr=corr_np
+          deformed_corr=self.runDeformable(tableNode=tableNode, sourceLM=aligned_corr, scale=s, targetSLM=np.asarray(tgt_down.points), parameters=parameters, rigidMatrix=M_icp, ssmData=ssmData)
           if cancel_callback and cancel_callback(): raise KeyboardInterrupt("Cancel requested")
           pred_np = None
           if use_bih:
@@ -1252,7 +1220,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     points = np.asarray(down.points, dtype=float)
     return points if len(points) else target
 
-  def runPoseEMDeformable(self, tableNode, targetSLM, parameters, ssmData=None, includeFine=True):
+  def runPoseEMDeformable(self, tableNode, targetSLM, parameters, ssmData=None):
     if tableNode is None:
       raise ValueError("Pose EM registration requires an SSM table.")
     mean, modes, eig = self._truncated_ssm(tableNode, parameters, ssmData=ssmData)
@@ -1291,14 +1259,12 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
         "Pose EM produced a collapsed template "
         f"(registered/target size ratio={size_ratio:.4g}, scale={result.scale:.4g})."
       )
-    if includeFine:
-      points = self.runFineDeformable(points, target, parameters)
     return np.asarray(points, dtype=float), result
 
   def initialize_template_pose_em(self, tableNode, srcModelNode, srcCorrNode, srcLmNode, tgtModelNode, parameters, ssmData=None):
     self.last_opt_info = None
     oldCorr = np.asarray(slicer.util.arrayFromMarkupsControlPoints(srcCorrNode), dtype=float)
-    mean, _, _ = self._truncated_ssm(tableNode, parameters, ssmData=ssmData)
+    mean, modes, _ = self._truncated_ssm(tableNode, parameters, ssmData=ssmData)
     if oldCorr.shape != mean.shape:
       raise ValueError(
         f"Template correspondences have shape {oldCorr.shape}, but the SSM mean has shape {mean.shape}."
@@ -1309,20 +1275,24 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       target,
       parameters,
       ssmData=ssmData,
-      includeFine=False,
     )
+    # Pose EM uses global pose to evaluate shape hypotheses, but template
+    # optimization returns only the selected SSM shape. Keep it in the SSM's
+    # original frame so the established ATLAS scaling, rigid, and deformable
+    # stages always run afterward.
+    newCorr = ssm_sample(mean, modes, result.coefficients)
 
     use_bih = bool(parameters.get("useBiharmonic", False))
     if use_bih:
       lam = float(parameters.get("bih_lam_init", parameters.get("bih_lam", 1e4)))
       try:
-        V0, V1, F = self.warp_model_biharmonic(srcModelNode, oldCorr, registeredCorr, lam=lam)
+        V0, V1, F = self.warp_model_biharmonic(srcModelNode, oldCorr, newCorr, lam=lam)
         if srcLmNode is not None:
           self.warp_markups_barycentric(srcLmNode, V0, V1, F)
       except Exception as exc:
         logging.warning(f"[pose-em] Biharmonic warp failed; falling back to TPS. Reason: {exc}")
         self.warp_model_tps(
-          srcModelNode, oldCorr, registeredCorr,
+          srcModelNode, oldCorr, newCorr,
           lam=float(parameters.get("tpsLambda", 0.0)),
           max_corr=int(parameters.get("tpsMaxCorr", 800)),
           seed=int(parameters.get("poseSeed", 0)),
@@ -1330,22 +1300,17 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
         )
     else:
       self.warp_model_tps(
-        srcModelNode, oldCorr, registeredCorr,
+        srcModelNode, oldCorr, newCorr,
         lam=float(parameters.get("tpsLambda", 0.0)),
         max_corr=int(parameters.get("tpsMaxCorr", 800)),
         seed=int(parameters.get("poseSeed", 0)),
         landmarksNode=srcLmNode,
       )
-    slicer.util.updateMarkupsControlPointsFromArray(srcCorrNode, registeredCorr)
+    slicer.util.updateMarkupsControlPointsFromArray(srcCorrNode, newCorr)
 
-    for node in (srcModelNode, srcCorrNode, srcLmNode):
-      if node is not None:
-        node.SetAttribute("PREDICT.pose_em_registered", "1")
-        node.SetAttribute("PREDICT.pose_em_target", tgtModelNode.GetName())
-        node.SetAttribute("PREDICT.pose_em_target_id", tgtModelNode.GetID())
     self.last_opt_info = {
       "backend": POSE_EM_BACKEND,
-      "decision": "pose_em_registered",
+      "decision": "pose_em_template_chosen",
       "norm_b": float(np.linalg.norm(result.coefficients)),
       "score": float(result.score),
       "score_margin": float(result.score_margin),

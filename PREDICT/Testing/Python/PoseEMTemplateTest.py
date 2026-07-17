@@ -81,6 +81,36 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
         self.assertIn("self.runPoseEMDeformable", source)
         self.assertIn('"pose_em_diagnostics.json"', source)
 
+    def test_pose_em_never_bypasses_standard_alignment_stages(self):
+        source = (PREDICT_DIR / "PREDICT.py").read_text(encoding="utf-8")
+        self.assertNotIn("poseEMPrealigned", source)
+        self.assertNotIn("Pose-EM Identity Handoff", source)
+        self.assertNotIn("PREDICT.pose_em_registered", source)
+
+        single_rigid = source.split("  def onAlignButton(self):", 1)[1].split(
+            "  def onDisplayMeshButton(self):", 1
+        )[0]
+        self.assertIn("logic.estimateTransform", single_rigid)
+
+        single_deformable = source.split("  def onCPDRegistration(self):", 1)[1].split(
+            "  def onDisplayWarpedModel", 1
+        )[0]
+        self.assertIn("logic.runDeformable", single_deformable)
+
+        batch = source.split("  def runLandmarkBatch(", 1)[1].split(
+            "  def _tableToArray", 1
+        )[0]
+        self.assertIn("self.initialize_template_pose_em", batch)
+        self.assertIn("RANSAC+ICP rigid", batch)
+        self.assertIn("self.estimateTransform", batch)
+        self.assertIn("self.runDeformable", batch)
+
+        pose_optimizer = source.split("  def initialize_template_pose_em(", 1)[1].split(
+            "  def smoothPolyData", 1
+        )[0]
+        self.assertIn("newCorr = ssm_sample(mean, modes, result.coefficients)", pose_optimizer)
+        self.assertIn("updateMarkupsControlPointsFromArray(srcCorrNode, newCorr)", pose_optimizer)
+
     def test_backend_is_explicit_and_legacy_by_default(self):
         self.assertEqual(optimization_backend({}), LEGACY_BACKEND)
         self.assertEqual(optimization_backend({"optimizationBackend": "pose_em"}), POSE_EM_BACKEND)

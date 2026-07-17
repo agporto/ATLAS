@@ -96,7 +96,7 @@ ATLAS organizes functionality into four scripted modules:
 * Batch processing (reuse tuned parameters; cancellation + progress)  
 * Template optimization with two backends:
   * **FPFH + RANSAC (current, default):** continuous SSM search scored by feature-based rigid registration.
-  * **Pose-marginalized EM (experimental):** deterministic global pose hypotheses followed by joint SSM-shape and similarity refinement under the CPD objective. The full warm state is passed into final atlas registration, avoiding a second global RANSAC search.
+  * **Pose-marginalized EM (experimental):** deterministic global pose hypotheses followed by joint SSM-shape and similarity refinement under the CPD objective. Pose is used to evaluate the hypotheses, but only the selected SSM shape is applied to the template; the standard scaling, RANSAC + ICP rigid alignment, and deformable stages always run afterward.
 
 **Outputs:** Predicted landmark `.mrk.json` files, warped template models (scene), optionally refined projected landmarks, and optional batch warped mesh exports as `.vtp` files.
 

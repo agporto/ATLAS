@@ -131,9 +131,9 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
         target = np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]])
         self.assertAlmostEqual(coverage_prescale(source, target, 0.25), 1.0)
 
-    def test_full_warm_state_is_handed_to_final_atlas_registration(self):
-        mean = np.array([[0.0, 0.0, 0.0], [1.0, 0.5, -0.25]])
-        modes = np.zeros((2, 3, 1)); modes[1, 2, 0] = 0.5
+    def test_centered_warm_state_is_composed_back_to_world_coordinates(self):
+        mean = np.array([[-1.0, -0.5, 0.25], [1.0, 0.5, -0.25]])
+        modes = np.zeros((2, 3, 1)); modes[:, 2, 0] = [0.5, -0.5]
         eigenvalues = np.array([0.4])
         coefficients = np.array([0.3])
         rotation = Rotation.from_euler("xyz", [10.0, -15.0, 25.0], degrees=True).as_matrix()
@@ -142,16 +142,23 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
         result = run_pose_em_registration(
             mean, target, modes, eigenvalues, PoseEMSettings(rotation_count=12),
             max_iterations=40, tolerance=1e-6, with_scale=True,
-            initializer=_initializer(coefficients, rotation, 1.2, translation),
+            initializer=_initializer(coefficients, rotation, 1.2, np.zeros((1, 3))),
             registration_class=_FakeRegistration,
         )
         state = _FakeRegistration.last.initial_state
+        self.assertFalse(_FakeRegistration.last.kwargs["use_kdtree"])
         np.testing.assert_allclose(state[0], coefficients)
         np.testing.assert_allclose(state[1], rotation)
         self.assertAlmostEqual(state[2], 1.2)
-        np.testing.assert_allclose(state[3], translation)
+        np.testing.assert_allclose(state[3], np.zeros((1, 3)), atol=1e-12)
         self.assertTrue(state[4])
         np.testing.assert_allclose(result.points, target, atol=1e-12)
+        np.testing.assert_allclose(result.translation, translation, atol=1e-12)
+        np.testing.assert_allclose(
+            transform_points(ssm_sample(mean, modes, coefficients), result.similarity_matrix()),
+            target,
+            atol=1e-12,
+        )
         self.assertEqual(result.hypotheses_evaluated, 61)
 
     def test_fixed_scale_handoff_recenters_pose_and_disables_scale_optimization(self):
@@ -182,11 +189,46 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
             registration_class=_FakeRegistration,
         )
         self.assertAlmostEqual(source_scale, 0.5)
-        self.assertAlmostEqual(result.scale, 1.0)
+        self.assertAlmostEqual(result.scale, source_scale)
         np.testing.assert_allclose(result.points.mean(0), target.mean(0), atol=1e-12)
 
 
 class PoseEMTemplateIntegrationTest(unittest.TestCase):
+    def test_small_offset_target_retains_scale(self):
+        try:
+            from biocpd import pose_marginalized_initialization
+        except (ImportError, AttributeError):
+            self.skipTest("biocpd pose-EM API is unavailable")
+        rng = np.random.default_rng(17)
+        mean = rng.normal(size=(80, 3)) * np.array([1.0, 0.55, 0.25])
+        mean[:, 0] += 0.15 * mean[:, 1] ** 2
+        modes = np.zeros((80, 3, 2))
+        modes[:, 0, 0] = 0.03 * mean[:, 0]
+        modes[:, 1, 1] = 0.02 * mean[:, 1]
+        eigenvalues = np.array([0.4, 0.2])
+        rotation = Rotation.from_euler("xyz", [40.0, -30.0, 28.0], degrees=True).as_matrix()
+        target = 0.08 * (mean @ rotation.T) + np.array([25.0, -12.0, 4.0])
+        settings = PoseEMSettings(
+            rotation_count=24,
+            coarse_source_count=60,
+            coarse_target_count=60,
+            coarse_rank=2,
+            coarse_iterations=5,
+            refine_count=2,
+            refine_target_count=80,
+            refine_iterations=10,
+            seed=5,
+        )
+        result = run_pose_em_registration(
+            mean, target, modes, eigenvalues, settings,
+            max_iterations=100, tolerance=1e-5, with_scale=True,
+        )
+        registered_diagonal = np.linalg.norm(np.ptp(result.points, axis=0))
+        target_diagonal = np.linalg.norm(np.ptp(target, axis=0))
+        self.assertGreater(registered_diagonal / target_diagonal, 0.9)
+        self.assertLess(registered_diagonal / target_diagonal, 1.1)
+        self.assertGreater(result.scale, 0.05)
+
     def test_large_rotation_recovery_through_atlas_adapter(self):
         try:
             from biocpd import pose_marginalized_initialization

@@ -203,7 +203,7 @@ def run_pose_em_registration(
     max_iterations: int,
     tolerance: float,
     with_scale: bool,
-    use_kdtree: bool = True,
+    use_kdtree: bool = False,
     k_neighbors: int = 10,
     source_scale: float = 1.0,
     initializer: Optional[Callable[..., Any]] = None,
@@ -217,7 +217,15 @@ def run_pose_em_registration(
     if source_scale <= 0 or not np.isfinite(source_scale):
         raise ValueError("source_scale must be finite and positive")
 
-    working_mean = mean * float(source_scale)
+    # Pose and shape are translation invariant, but AtlasRegistration performs
+    # its normalized similarity updates in float32. Passing a small object at a
+    # large world-coordinate offset makes those updates subtract large, nearly
+    # equal translations and can drive the estimated scale to zero. Work in
+    # independent centroid frames, then compose back to world coordinates.
+    source_centroid = mean.mean(axis=0, keepdims=True)
+    target_centroid = target.mean(axis=0, keepdims=True)
+    working_mean = (mean - source_centroid) * float(source_scale)
+    working_target = target - target_centroid
     working_modes = modes * float(source_scale)
     if initializer is None or registration_class is None:
         default_initializer, default_registration = _biocpd_api()
@@ -226,7 +234,7 @@ def run_pose_em_registration(
 
     initial = initializer(
         working_mean,
-        target,
+        working_target,
         working_modes,
         eigenvalues,
         **settings.initializer_kwargs(),
@@ -239,10 +247,10 @@ def run_pose_em_registration(
         translation = np.asarray(initial.translation, dtype=np.float64).reshape(1, 3)
     else:
         scale = 1.0
-        translation = fixed_scale_translation(initial_shape, target, rotation)
+        translation = fixed_scale_translation(initial_shape, working_target, rotation)
 
     registration = registration_class(
-        X=target,
+        X=working_target,
         Y=working_mean,
         U=working_modes,
         eigenvalues=eigenvalues,
@@ -264,13 +272,33 @@ def run_pose_em_registration(
         translation,
         world_units=True,
     )
-    points, final_parameters = registration.register()
+    points_centered, final_parameters = registration.register()
     final_coefficients = np.asarray(final_parameters.get("b", coefficients), dtype=np.float64).reshape(-1)
     final_rotation = np.asarray(final_parameters.get("R_world", rotation), dtype=np.float64)
-    final_scale = float(final_parameters.get("s_world", scale))
-    final_translation = np.asarray(final_parameters.get("t_world", translation), dtype=np.float64).reshape(1, 3)
+    residual_scale = float(final_parameters.get("s_world", scale))
+    centered_translation = np.asarray(
+        final_parameters.get("t_world", translation), dtype=np.float64
+    ).reshape(1, 3)
+    final_scale = float(source_scale) * residual_scale
+    final_translation = (
+        centered_translation
+        + target_centroid
+        - final_scale * (source_centroid @ final_rotation.T)
+    )
+    points = np.asarray(points_centered, dtype=np.float64) + target_centroid
+    final_parameters = dict(final_parameters)
+    final_parameters.update({
+        "R_world": final_rotation,
+        "s_world": final_scale,
+        "t_world": final_translation,
+        "s_preconditioned": residual_scale,
+        "t_preconditioned": centered_translation,
+        "source_centroid": source_centroid.copy(),
+        "target_centroid": target_centroid.copy(),
+        "source_scale": float(source_scale),
+    })
     return PoseEMRegistrationResult(
-        points=np.asarray(points, dtype=np.float64),
+        points=points,
         coefficients=final_coefficients,
         rotation=final_rotation,
         scale=final_scale,

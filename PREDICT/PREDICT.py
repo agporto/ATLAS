@@ -920,10 +920,11 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
       if dec == "pose_em_registered":
           self._log_opt(
-            "[pose-em] Registered template "
-            f"(||b||={nb:.3f}, score={info['score']:.3f}, margin={info['score_margin']:.3f}, "
-            f"effective poses={info['effective_hypotheses']:.2f}, "
-            f"evaluated/refined={info['hypotheses_evaluated']}/{info['hypotheses_refined']})."
+              "[pose-em] Registered template "
+              f"(||b||={nb:.3f}, scale={info['scale']:.4g}, size ratio={info['size_ratio']:.3f}, "
+              f"score={info['score']:.3f}, margin={info['score_margin']:.3f}, "
+              f"effective poses={info['effective_hypotheses']:.2f}, "
+              f"evaluated/refined={info['hypotheses_evaluated']}/{info['hypotheses_refined']})."
           )
           if info["effective_hypotheses"] >= 2.0:
               self._log_opt(
@@ -1035,6 +1036,10 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
               includeFine=True,
             )
             aligned_corr = corr_np
+            pose_size_ratio = float(
+              np.linalg.norm(np.ptp(deformed_corr, axis=0)) /
+              max(np.linalg.norm(np.ptp(target_points, axis=0)), np.finfo(float).eps)
+            )
             self.last_opt_info = {
               "backend": POSE_EM_BACKEND,
               "decision": "pose_em_registered",
@@ -1045,6 +1050,8 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
               "effective_hypotheses": float(pose_result.effective_hypotheses),
               "hypotheses_evaluated": int(pose_result.hypotheses_evaluated),
               "hypotheses_refined": int(pose_result.hypotheses_refined),
+              "scale": float(pose_result.scale),
+              "size_ratio": pose_size_ratio,
             }
             pose_entry = {
               "target": fname,
@@ -1059,6 +1066,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
               "hypotheses_refined": int(pose_result.hypotheses_refined),
               "coefficient_norm": float(np.linalg.norm(pose_result.coefficients)),
               "final_scale": float(pose_result.scale),
+              "size_ratio": pose_size_ratio,
             }
             if status_callback:
               status_callback(
@@ -1267,11 +1275,22 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       max_iterations=int(parameters.get("max_iterations", 250)),
       tolerance=float(parameters.get("tolerance", 1e-6)),
       with_scale=with_scale,
-      use_kdtree=bool(parameters.get("poseFinalUseKDTree", True)),
+      # Match the dense likelihood used by pose-marginalized refinement. A
+      # small-k sparse completion can pull a valid small residual scale into a
+      # local collapsed solution; keep it available only as an explicit opt-in.
+      use_kdtree=bool(parameters.get("poseFinalUseKDTree", False)),
       k_neighbors=int(parameters.get("poseFinalNeighbors", 10)),
       source_scale=source_scale,
     )
     points = result.points
+    target_diag = float(np.linalg.norm(np.ptp(target, axis=0)))
+    registered_diag = float(np.linalg.norm(np.ptp(points, axis=0)))
+    size_ratio = registered_diag / max(target_diag, np.finfo(float).eps)
+    if with_scale and size_ratio < 0.1:
+      raise RuntimeError(
+        "Pose EM produced a collapsed template "
+        f"(registered/target size ratio={size_ratio:.4g}, scale={result.scale:.4g})."
+      )
     if includeFine:
       points = self.runFineDeformable(points, target, parameters)
     return np.asarray(points, dtype=float), result
@@ -1335,6 +1354,10 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       "hypotheses_evaluated": int(result.hypotheses_evaluated),
       "hypotheses_refined": int(result.hypotheses_refined),
       "scale": float(result.scale),
+      "size_ratio": float(
+        np.linalg.norm(np.ptp(registeredCorr, axis=0)) /
+        max(np.linalg.norm(np.ptp(target, axis=0)), np.finfo(float).eps)
+      ),
     }
     return result
 

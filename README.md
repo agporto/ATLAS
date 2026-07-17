@@ -119,7 +119,7 @@ On first use of PREDICT, a dialog offers to install:
 * **`tiny3d`** – lightweight point cloud / registration toolkit (Open3D style API)
 * **`biocpd>=1.3.0`** – PCA‑guided CPD atlas registration and the experimental pose-marginalized initializer
 
-The pose-EM backend is opt-in. Existing installations and batch workflows continue to use the current FPFH + RANSAC optimizer unless the experimental backend is selected in PREDICT's Template Optimization tab. Pose-EM diagnostics report the best-score margin, posterior entropy/effective pose count, and the numbers of evaluated and refined hypotheses. A small score margin or a high effective pose count may indicate rotational ambiguity, especially for symmetric anatomy. Batch runs also save these diagnostics to `pose_em_diagnostics.json` in the landmark output directory.
+The pose-EM backend is opt-in. Existing installations and batch workflows continue to use the current FPFH + RANSAC optimizer unless the experimental backend is selected in PREDICT's Template Optimization tab. Pose-EM diagnostics report the final scale and target-relative size alongside the best-score margin, posterior entropy/effective pose count, and the numbers of evaluated and refined hypotheses. The adapter centers source and target coordinates during EM and uses dense final responsibilities, matching biocpd's pose refinement; together these prevent similarity-scale collapse for small meshes far from the world origin. A small score margin or a high effective pose count may indicate rotational ambiguity, especially for symmetric anatomy. Batch runs also save these diagnostics to `pose_em_diagnostics.json` in the landmark output directory.
 
 ---
 ## Related / Complementary Extensions
@@ -192,5 +192,3 @@ Enable `View > Error Log` in Slicer for stack traces; include logs in Issues.
 
 ---
 *Last updated:* 2025-08-23
-
-

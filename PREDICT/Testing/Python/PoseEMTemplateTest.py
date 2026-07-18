@@ -80,6 +80,7 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
         self.assertIn("logic.initialize_template_pose_em", source)
         self.assertIn("self.runPoseEMDeformable", source)
         self.assertIn('"pose_em_diagnostics.json"', source)
+        self.assertIn("codex/real-data-registration", source)
 
     def test_pose_em_never_bypasses_standard_alignment_stages(self):
         source = (PREDICT_DIR / "PREDICT.py").read_text(encoding="utf-8")
@@ -127,18 +128,61 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
             "poseCoarseTargetCount": 90,
             "poseCoarseRank": 3,
             "poseCoarseIterations": 5,
+            "poseCoarseScreenIterations": 3,
+            "poseCoarseSurvivorCount": 8,
+            "poseCoarseScoreMode": "final",
             "poseRefineCount": 1,
+            "poseRefineSourceCount": 70,
             "poseRefineTargetCount": 120,
             "poseRefineIterations": 9,
-            "lambda_reg": 0.03,
-            "w": 0.15,
+            "poseLambdaReg": 0.03,
+            "poseOutlierWeight": 0.15,
             "poseIdentityPrior": 0.25,
             "poseSeed": 7,
+            "poseNJobs": 2,
         })
         self.assertEqual(settings.rotation_count, 24)
         self.assertEqual(settings.refine_count, 1)
         self.assertEqual(settings.seed, 7)
-        self.assertEqual(settings.initializer_kwargs()["outlier_weight"], 0.15)
+        self.assertEqual(settings.initializer_kwargs(), {
+            "rotation_count": 24,
+            "coarse_source_count": 80,
+            "coarse_target_count": 90,
+            "coarse_rank": 3,
+            "coarse_iterations": 5,
+            "coarse_screen_iterations": 3,
+            "coarse_survivor_count": 8,
+            "coarse_score_mode": "final",
+            "refine_count": 1,
+            "refine_source_count": 70,
+            "refine_target_count": 120,
+            "refine_iterations": 9,
+            "lambda_reg": 0.03,
+            "outlier_weight": 0.15,
+            "identity_prior_probability": 0.25,
+            "seed": 7,
+            "n_jobs": 2,
+        })
+
+    def test_defaults_match_biocpd_real_data_configuration(self):
+        settings = PoseEMSettings.from_mapping({})
+        self.assertEqual(settings.rotation_count, 193)
+        self.assertEqual(settings.coarse_screen_iterations, 8)
+        self.assertEqual(settings.coarse_survivor_count, 193)
+        self.assertEqual(settings.coarse_score_mode, "trajectory")
+        self.assertIsNone(settings.refine_source_count)
+        self.assertEqual(settings.lambda_reg, 0.1)
+        self.assertEqual(settings.outlier_weight, 0.05)
+        self.assertEqual(settings.n_jobs, 1)
+
+    def test_ui_uses_exact_real_data_defaults(self):
+        source = (PREDICT_DIR / "PREDICT.py").read_text(encoding="utf-8")
+        self.assertIn('poseOptL.addRow("Total pose hypotheses:", self.poseRotationCount)', source)
+        self.assertIn("self.poseRotationCount.value=193", source)
+        self.assertIn('"poseCoarseScoreMode": "trajectory" if scoreModeIndex == 0 else "final"', source)
+        self.assertIn('self.poseRefineSourceCount.setSpecialValueText("Full source")', source)
+        self.assertIn("self.poseLambdaReg.value=0.10", source)
+        self.assertIn("self.poseOutlierWeight.value=0.05", source)
 
     def test_ssm_sample_uses_native_coefficients_without_sqrt_eigen_scaling(self):
         mean = np.zeros((2, 3))
@@ -244,6 +288,7 @@ class PoseEMTemplateIntegrationTest(unittest.TestCase):
             coarse_target_count=60,
             coarse_rank=2,
             coarse_iterations=5,
+            coarse_screen_iterations=5,
             refine_count=2,
             refine_target_count=80,
             refine_iterations=10,
@@ -281,6 +326,7 @@ class PoseEMTemplateIntegrationTest(unittest.TestCase):
             coarse_target_count=50,
             coarse_rank=2,
             coarse_iterations=4,
+            coarse_screen_iterations=4,
             refine_count=2,
             refine_target_count=60,
             refine_iterations=8,

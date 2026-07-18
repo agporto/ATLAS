@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import inspect
 from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
@@ -21,34 +22,48 @@ def pose_em_enabled(parameters: Mapping[str, Any], skip_optimization: bool = Fal
 
 @dataclass(frozen=True)
 class PoseEMSettings:
-    rotation_count: int = 96
+    rotation_count: int = 193
     coarse_source_count: int = 400
     coarse_target_count: int = 400
     coarse_rank: int = 12
     coarse_iterations: int = 8
+    coarse_screen_iterations: int = 8
+    coarse_survivor_count: int = 193
+    coarse_score_mode: str = "trajectory"
     refine_count: int = 12
+    refine_source_count: Optional[int] = None
     refine_target_count: int = 1600
     refine_iterations: int = 30
-    lambda_reg: float = 0.01
-    outlier_weight: float = 0.1
+    lambda_reg: float = 0.1
+    outlier_weight: float = 0.05
     identity_prior_probability: float = 0.2
     seed: int = 0
+    n_jobs: int = 1
 
     @classmethod
     def from_mapping(cls, parameters: Mapping[str, Any]) -> "PoseEMSettings":
         settings = cls(
-            rotation_count=int(parameters.get("poseRotationCount", 96)),
+            rotation_count=int(parameters.get("poseRotationCount", 193)),
             coarse_source_count=int(parameters.get("poseCoarseSourceCount", 400)),
             coarse_target_count=int(parameters.get("poseCoarseTargetCount", 400)),
             coarse_rank=int(parameters.get("poseCoarseRank", 12)),
             coarse_iterations=int(parameters.get("poseCoarseIterations", 8)),
+            coarse_screen_iterations=int(parameters.get("poseCoarseScreenIterations", 8)),
+            coarse_survivor_count=int(parameters.get("poseCoarseSurvivorCount", 193)),
+            coarse_score_mode=str(parameters.get("poseCoarseScoreMode", "trajectory")).strip().lower(),
             refine_count=int(parameters.get("poseRefineCount", 12)),
+            refine_source_count=(
+                None
+                if int(parameters.get("poseRefineSourceCount", 0)) == 0
+                else int(parameters.get("poseRefineSourceCount", 0))
+            ),
             refine_target_count=int(parameters.get("poseRefineTargetCount", 1600)),
             refine_iterations=int(parameters.get("poseRefineIterations", 30)),
-            lambda_reg=float(parameters.get("lambda_reg", 0.01)),
-            outlier_weight=float(parameters.get("w", 0.1)),
+            lambda_reg=float(parameters.get("poseLambdaReg", 0.1)),
+            outlier_weight=float(parameters.get("poseOutlierWeight", 0.05)),
             identity_prior_probability=float(parameters.get("poseIdentityPrior", 0.2)),
             seed=int(parameters.get("poseSeed", 0)),
+            n_jobs=int(parameters.get("poseNJobs", 1)),
         )
         settings.validate()
         return settings
@@ -60,6 +75,8 @@ class PoseEMSettings:
             "coarse_target_count": self.coarse_target_count,
             "coarse_rank": self.coarse_rank,
             "coarse_iterations": self.coarse_iterations,
+            "coarse_screen_iterations": self.coarse_screen_iterations,
+            "coarse_survivor_count": self.coarse_survivor_count,
             "refine_count": self.refine_count,
             "refine_target_count": self.refine_target_count,
             "refine_iterations": self.refine_iterations,
@@ -67,12 +84,22 @@ class PoseEMSettings:
         invalid = [name for name, value in positive.items() if value < 1]
         if invalid:
             raise ValueError(f"Pose EM settings must be positive: {', '.join(invalid)}")
+        if self.coarse_screen_iterations > self.coarse_iterations:
+            raise ValueError("coarse_screen_iterations must not exceed coarse_iterations")
+        if self.coarse_survivor_count < min(self.refine_count, self.rotation_count):
+            raise ValueError("coarse_survivor_count must cover the requested finalists")
+        if self.coarse_score_mode not in ("trajectory", "final"):
+            raise ValueError("coarse_score_mode must be 'trajectory' or 'final'")
+        if self.refine_source_count is not None and self.refine_source_count < 1:
+            raise ValueError("refine_source_count must be positive or None")
         if self.lambda_reg < 0:
             raise ValueError("lambda_reg must be non-negative")
         if not 0 <= self.outlier_weight < 1:
             raise ValueError("outlier_weight must be in [0, 1)")
         if not 0 < self.identity_prior_probability < 1:
             raise ValueError("identity_prior_probability must be in (0, 1)")
+        if self.n_jobs != -1 and self.n_jobs < 1:
+            raise ValueError("n_jobs must be positive or -1")
 
     def initializer_kwargs(self) -> dict[str, Any]:
         return {
@@ -81,14 +108,39 @@ class PoseEMSettings:
             "coarse_target_count": self.coarse_target_count,
             "coarse_rank": self.coarse_rank,
             "coarse_iterations": self.coarse_iterations,
+            "coarse_screen_iterations": self.coarse_screen_iterations,
+            "coarse_survivor_count": self.coarse_survivor_count,
+            "coarse_score_mode": self.coarse_score_mode,
             "refine_count": self.refine_count,
+            "refine_source_count": self.refine_source_count,
             "refine_target_count": self.refine_target_count,
             "refine_iterations": self.refine_iterations,
             "lambda_reg": self.lambda_reg,
             "outlier_weight": self.outlier_weight,
             "identity_prior_probability": self.identity_prior_probability,
             "seed": self.seed,
+            "n_jobs": self.n_jobs,
         }
+
+
+def _require_real_data_initializer(initializer: Callable[..., Any]) -> None:
+    """Fail clearly when an older 1.3.0 build is present under the same version."""
+    parameters = inspect.signature(initializer).parameters
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return
+    required = {
+        "coarse_screen_iterations",
+        "coarse_survivor_count",
+        "coarse_score_mode",
+        "refine_source_count",
+        "n_jobs",
+    }
+    missing = sorted(required.difference(parameters))
+    if missing:
+        raise RuntimeError(
+            "Pose EM template optimization requires the biocpd real-data "
+            "initializer API; the installed build is missing: " + ", ".join(missing)
+        )
 
 
 @dataclass(frozen=True)
@@ -231,6 +283,7 @@ def run_pose_em_registration(
         default_initializer, default_registration = _biocpd_api()
         initializer = default_initializer if initializer is None else initializer
         registration_class = default_registration if registration_class is None else registration_class
+    _require_real_data_initializer(initializer)
 
     initial = initializer(
         working_mean,

@@ -103,21 +103,31 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
   # ----- Dependencies installer (async-safe) -----
   def _ensure_deps_async(self):
-    import importlib.util, traceback, sys, subprocess
-    required=[("tiny3d","tiny3d"),("biocpd","biocpd>=1.3.0")]
+    import importlib.util, inspect, traceback, sys, subprocess
+    biocpdSpec="git+https://github.com/agporto/biocpd.git@codex/real-data-registration"
+    required=[("tiny3d","tiny3d"),("biocpd",biocpdSpec)]
+
+    def hasPoseRealDataAPI():
+        try:
+            biocpd_module = importlib.import_module("biocpd")
+            initializer = getattr(biocpd_module, "pose_marginalized_initialization")
+            parameters = inspect.signature(initializer).parameters
+            return all(name in parameters for name in (
+                "coarse_screen_iterations", "coarse_survivor_count",
+                "coarse_score_mode", "refine_source_count", "n_jobs",
+            ))
+        except Exception:
+            return False
+
     missing=[]
     for module_name, _ in required:
         if importlib.util.find_spec(module_name) is None:
             missing.append(module_name)
-        elif module_name == "biocpd":
-            try:
-                biocpd_module = importlib.import_module("biocpd")
-                if not hasattr(biocpd_module, "pose_marginalized_initialization"):
-                    missing.append(module_name)
-            except Exception:
-                missing.append(module_name)
+        elif module_name == "biocpd" and not hasPoseRealDataAPI():
+            missing.append(module_name)
     if missing:
-        labels=[spec for name,spec in required if name in missing]
+        labels=[("biocpd real-data registration branch" if name == "biocpd" else spec)
+                for name,spec in required if name in missing]
         msg="PREDICT needs or must upgrade: "+", ".join(labels)+".\nInstall now?"
         if not slicer.util.confirmOkCancelDisplay(msg):
             slicer.util.errorDisplay("Dependencies not installed; some actions may fail."); return
@@ -133,6 +143,8 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
                     importlib.invalidate_caches()
             for m in ("tiny3d","biocpd","scipy.spatial","scipy.optimize"):
                 importlib.import_module(m)
+            if not hasPoseRealDataAPI():
+                raise RuntimeError("Installed biocpd does not provide the real-data Pose-EM API.")
         except Exception as e:
             self._deps_error=(e, traceback.format_exc())
         else:
@@ -273,6 +285,10 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     return POSE_EM_BACKEND if index == 1 else LEGACY_BACKEND
 
   def _optimization_parameters(self):
+    try:
+      scoreModeIndex = int(self.poseCoarseScoreMode.currentIndex)
+    except TypeError:
+      scoreModeIndex = int(self.poseCoarseScoreMode.currentIndex())
     parameters = dict(self.parameterDictionary)
     parameters.update({
       "optimizationBackend": self._optimization_backend(),
@@ -283,11 +299,18 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
       "poseCoarseTargetCount": int(self.poseCoarseTargetCount.value),
       "poseCoarseRank": int(self.poseCoarseRank.value),
       "poseCoarseIterations": int(self.poseCoarseIterations.value),
+      "poseCoarseScreenIterations": int(self.poseCoarseScreenIterations.value),
+      "poseCoarseSurvivorCount": int(self.poseCoarseSurvivorCount.value),
+      "poseCoarseScoreMode": "trajectory" if scoreModeIndex == 0 else "final",
       "poseRefineCount": int(self.poseRefineCount.value),
+      "poseRefineSourceCount": int(self.poseRefineSourceCount.value),
       "poseRefineTargetCount": int(self.poseRefineTargetCount.value),
       "poseRefineIterations": int(self.poseRefineIterations.value),
+      "poseLambdaReg": float(self.poseLambdaReg.value),
+      "poseOutlierWeight": float(self.poseOutlierWeight.value),
       "poseIdentityPrior": float(self.poseIdentityPrior.value),
       "poseSeed": int(self.poseSeed.value),
+      "poseNJobs": int(self.poseNJobs.value),
     })
     return parameters
 
@@ -420,18 +443,25 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
     self.poseOptimizationBox=ctk.ctkCollapsibleButton(); self.poseOptimizationBox.text="Experimental pose-EM settings"; self.poseOptimizationBox.collapsed=False
     poseOptL=qt.QFormLayout(self.poseOptimizationBox); optL.addRow(self.poseOptimizationBox)
-    poseHelp=qt.QLabel("Deterministic global rotation hypotheses are refined jointly with SSM shape and similarity pose. Only the selected SSM shape is applied to the template; standard scaling, rigid alignment, and deformable registration still run afterward.")
+    poseHelp=qt.QLabel("The defaults below match biocpd's real-data registration configuration: trajectory scoring, all coarse poses retained, and full-source refinement. Only the selected SSM shape is applied to the template; standard scaling, rigid alignment, and deformable registration still run afterward.")
     poseHelp.setWordWrap(True); poseOptL.addRow(poseHelp)
-    self.poseRotationCount=qt.QSpinBox(); self.poseRotationCount.minimum=12; self.poseRotationCount.maximum=512; self.poseRotationCount.value=96; self.poseRotationCount.setToolTip("Base SO(3) samples. Near-identity shells are added automatically."); poseOptL.addRow("Base rotations:", self.poseRotationCount)
+    self.poseRotationCount=qt.QSpinBox(); self.poseRotationCount.minimum=12; self.poseRotationCount.maximum=2048; self.poseRotationCount.value=193; self.poseRotationCount.setToolTip("Exact total hypothesis budget, including the identity and global/local rotation samples."); poseOptL.addRow("Total pose hypotheses:", self.poseRotationCount)
     self.poseCoarseSourceCount=qt.QSpinBox(); self.poseCoarseSourceCount.minimum=20; self.poseCoarseSourceCount.maximum=10000; self.poseCoarseSourceCount.value=400; poseOptL.addRow("Coarse source points:", self.poseCoarseSourceCount)
     self.poseCoarseTargetCount=qt.QSpinBox(); self.poseCoarseTargetCount.minimum=20; self.poseCoarseTargetCount.maximum=10000; self.poseCoarseTargetCount.value=400; poseOptL.addRow("Coarse target points:", self.poseCoarseTargetCount)
     self.poseCoarseRank=qt.QSpinBox(); self.poseCoarseRank.minimum=1; self.poseCoarseRank.maximum=100; self.poseCoarseRank.value=12; poseOptL.addRow("Coarse SSM rank:", self.poseCoarseRank)
     self.poseCoarseIterations=qt.QSpinBox(); self.poseCoarseIterations.minimum=1; self.poseCoarseIterations.maximum=100; self.poseCoarseIterations.value=8; poseOptL.addRow("Coarse EM iterations:", self.poseCoarseIterations)
+    self.poseCoarseScreenIterations=qt.QSpinBox(); self.poseCoarseScreenIterations.minimum=1; self.poseCoarseScreenIterations.maximum=100; self.poseCoarseScreenIterations.value=8; self.poseCoarseScreenIterations.setToolTip("Iterations completed before optional screening; equal to coarse iterations by default, so every pose completes the coarse stage."); poseOptL.addRow("Screen after iteration:", self.poseCoarseScreenIterations)
+    self.poseCoarseSurvivorCount=qt.QSpinBox(); self.poseCoarseSurvivorCount.minimum=1; self.poseCoarseSurvivorCount.maximum=2048; self.poseCoarseSurvivorCount.value=193; self.poseCoarseSurvivorCount.setToolTip("Number of hypotheses retained after screening. The default retains the entire 193-pose budget."); poseOptL.addRow("Coarse survivors:", self.poseCoarseSurvivorCount)
+    self.poseCoarseScoreMode=qt.QComboBox(); self.poseCoarseScoreMode.addItem("Trajectory (real-data default)"); self.poseCoarseScoreMode.addItem("Final iteration"); self.poseCoarseScoreMode.setToolTip("Rank coarse poses by their EM objective trajectory or only their final objective."); poseOptL.addRow("Coarse scoring:", self.poseCoarseScoreMode)
     self.poseRefineCount=qt.QSpinBox(); self.poseRefineCount.minimum=1; self.poseRefineCount.maximum=64; self.poseRefineCount.value=12; poseOptL.addRow("Pose finalists:", self.poseRefineCount)
+    self.poseRefineSourceCount=qt.QSpinBox(); self.poseRefineSourceCount.minimum=0; self.poseRefineSourceCount.maximum=50000; self.poseRefineSourceCount.value=0; self.poseRefineSourceCount.setSpecialValueText("Full source"); self.poseRefineSourceCount.setToolTip("Use 0 for all source points, matching the real-data default."); poseOptL.addRow("Refinement source points:", self.poseRefineSourceCount)
     self.poseRefineTargetCount=qt.QSpinBox(); self.poseRefineTargetCount.minimum=50; self.poseRefineTargetCount.maximum=50000; self.poseRefineTargetCount.value=1600; poseOptL.addRow("Refinement target points:", self.poseRefineTargetCount)
     self.poseRefineIterations=qt.QSpinBox(); self.poseRefineIterations.minimum=1; self.poseRefineIterations.maximum=250; self.poseRefineIterations.value=30; poseOptL.addRow("Refinement EM iterations:", self.poseRefineIterations)
+    self.poseLambdaReg=qt.QDoubleSpinBox(); self.poseLambdaReg.minimum=0.0; self.poseLambdaReg.maximum=5.0; self.poseLambdaReg.singleStep=0.01; self.poseLambdaReg.decimals=3; self.poseLambdaReg.value=0.10; self.poseLambdaReg.setToolTip("Pose-initializer SSM regularization; independent of downstream PCA-CPD settings."); poseOptL.addRow("Pose SSM weight:", self.poseLambdaReg)
+    self.poseOutlierWeight=qt.QDoubleSpinBox(); self.poseOutlierWeight.minimum=0.0; self.poseOutlierWeight.maximum=0.99; self.poseOutlierWeight.singleStep=0.01; self.poseOutlierWeight.decimals=2; self.poseOutlierWeight.value=0.05; self.poseOutlierWeight.setToolTip("Pose-initializer outlier weight; independent of downstream PCA-CPD settings."); poseOptL.addRow("Pose outlier weight:", self.poseOutlierWeight)
     self.poseIdentityPrior=qt.QDoubleSpinBox(); self.poseIdentityPrior.minimum=0.01; self.poseIdentityPrior.maximum=0.99; self.poseIdentityPrior.singleStep=0.05; self.poseIdentityPrior.decimals=2; self.poseIdentityPrior.value=0.20; poseOptL.addRow("Identity-pose prior:", self.poseIdentityPrior)
     self.poseSeed=qt.QSpinBox(); self.poseSeed.minimum=0; self.poseSeed.maximum=2147483647; self.poseSeed.value=0; poseOptL.addRow("Deterministic seed:", self.poseSeed)
+    self.poseNJobs=qt.QSpinBox(); self.poseNJobs.minimum=1; self.poseNJobs.maximum=128; self.poseNJobs.value=1; self.poseNJobs.setToolTip("Parallel pose workers. One matches the validated deterministic default."); poseOptL.addRow("Pose workers:", self.poseNJobs)
     self.optimizeButton=qt.QPushButton("Run Template Optimization"); optL.addRow(self.optimizeButton)
 
     # --- Optimization Tab (append this) ---

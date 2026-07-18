@@ -4,11 +4,12 @@ set(MODULE_NAME PREDICT)
 #-----------------------------------------------------------------------------
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
-  PoseEMTemplate.py
   )
 
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
+  Resources/Python/__init__.py
+  Resources/Python/PoseEMTemplate.py
   )
 
 #-----------------------------------------------------------------------------

@@ -4,7 +4,7 @@ from slicer.ScriptedLoadableModule import *
 import vtk.util.numpy_support as vtk_np
 
 try:
-    from PoseEMTemplate import (
+    from Resources.Python.PoseEMTemplate import (
         LEGACY_BACKEND,
         POSE_EM_BACKEND,
         PoseEMSettings,
@@ -15,7 +15,7 @@ try:
         ssm_sample,
     )
 except ImportError:
-    from .PoseEMTemplate import (
+    from .Resources.Python.PoseEMTemplate import (
         LEGACY_BACKEND,
         POSE_EM_BACKEND,
         PoseEMSettings,

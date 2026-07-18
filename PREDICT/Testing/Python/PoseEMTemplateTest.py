@@ -10,7 +10,7 @@ PREDICT_DIR = Path(__file__).resolve().parents[2]
 if str(PREDICT_DIR) not in sys.path:
     sys.path.insert(0, str(PREDICT_DIR))
 
-from PoseEMTemplate import (
+from Resources.Python.PoseEMTemplate import (
     LEGACY_BACKEND,
     POSE_EM_BACKEND,
     PoseEMSettings,
@@ -71,6 +71,14 @@ def _initializer(coefficients, rotation, scale, translation):
 
 
 class PoseEMTemplateUnitTest(unittest.TestCase):
+    def test_helper_is_packaged_as_a_resource_not_a_slicer_module(self):
+        cmake = (PREDICT_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
+        scripts = cmake.split("set(MODULE_PYTHON_SCRIPTS", 1)[1].split(")", 1)[0]
+        resources = cmake.split("set(MODULE_PYTHON_RESOURCES", 1)[1].split(")", 1)[0]
+        self.assertNotIn("PoseEMTemplate.py", scripts)
+        self.assertIn("Resources/Python/PoseEMTemplate.py", resources)
+        self.assertFalse((PREDICT_DIR / "PoseEMTemplate.py").exists())
+
     def test_slicer_module_wires_backend_selector_to_standalone_and_batch_paths(self):
         source = (PREDICT_DIR / "PREDICT.py").read_text(encoding="utf-8")
         compile(source, str(PREDICT_DIR / "PREDICT.py"), "exec")

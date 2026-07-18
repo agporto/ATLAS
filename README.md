@@ -121,6 +121,8 @@ On first use of PREDICT, a dialog offers to install:
 
 The pose-EM backend is opt-in. Existing installations and batch workflows continue to use the current FPFH + RANSAC optimizer unless the experimental backend is selected in PREDICT's Template Optimization tab. Its UI defaults mirror biocpd's real-data configuration: 193 total hypotheses, trajectory scoring, all coarse poses retained, full-source refinement, initializer SSM/outlier weights of 0.1/0.05, and one worker. Pose-EM diagnostics report the final scale and target-relative size alongside the best-score margin, posterior entropy/effective pose count, and the numbers of evaluated and refined hypotheses. The adapter centers source and target coordinates during EM and uses dense final responsibilities, matching biocpd's pose refinement; together these prevent similarity-scale collapse for small meshes far from the world origin. A small score margin or a high effective pose count may indicate rotational ambiguity, especially for symmetric anatomy. Batch runs also save these diagnostics to `pose_em_diagnostics.json` in the landmark output directory.
 
+The Pose-EM adapter is packaged under PREDICT's private Python resources. It is not a standalone Slicer module and therefore is not presented to Slicer's scripted-module factory for instantiation.
+
 ---
 ## Related / Complementary Extensions
 * **SlicerMorph** – Broader morphology workflows (import, GPA, semi-landmarks, ALPACA).

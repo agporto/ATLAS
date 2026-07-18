@@ -461,7 +461,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.poseOutlierWeight=qt.QDoubleSpinBox(); self.poseOutlierWeight.minimum=0.0; self.poseOutlierWeight.maximum=0.99; self.poseOutlierWeight.singleStep=0.01; self.poseOutlierWeight.decimals=2; self.poseOutlierWeight.value=0.05; self.poseOutlierWeight.setToolTip("Pose-initializer outlier weight; independent of downstream PCA-CPD settings."); poseOptL.addRow("Pose outlier weight:", self.poseOutlierWeight)
     self.poseIdentityPrior=qt.QDoubleSpinBox(); self.poseIdentityPrior.minimum=0.01; self.poseIdentityPrior.maximum=0.99; self.poseIdentityPrior.singleStep=0.05; self.poseIdentityPrior.decimals=2; self.poseIdentityPrior.value=0.20; poseOptL.addRow("Identity-pose prior:", self.poseIdentityPrior)
     self.poseSeed=qt.QSpinBox(); self.poseSeed.minimum=0; self.poseSeed.maximum=2147483647; self.poseSeed.value=0; poseOptL.addRow("Deterministic seed:", self.poseSeed)
-    self.poseNJobs=qt.QSpinBox(); self.poseNJobs.minimum=1; self.poseNJobs.maximum=128; self.poseNJobs.value=1; self.poseNJobs.setToolTip("Parallel pose workers. One matches the validated deterministic default."); poseOptL.addRow("Pose workers:", self.poseNJobs)
+    self.poseNJobs=qt.QSpinBox(); self.poseNJobs.minimum=1; self.poseNJobs.maximum=128; self.poseNJobs.value=4; self.poseNJobs.setToolTip("Parallel pose hypotheses. PREDICT uses sequential BLAS locally when supported; unsupported native backends safely fall back to one worker."); poseOptL.addRow("Pose workers:", self.poseNJobs)
     self.optimizeButton=qt.QPushButton("Run Template Optimization"); optL.addRow(self.optimizeButton)
 
     # --- Optimization Tab (append this) ---
@@ -936,7 +936,9 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
               f"(||b||={nb:.3f}, scale={info['scale']:.4g}, size ratio={info['size_ratio']:.3f}, "
               f"score={info['score']:.3f}, margin={info['score_margin']:.3f}, "
               f"effective poses={info['effective_hypotheses']:.2f}, "
-              f"evaluated/refined={info['hypotheses_evaluated']}/{info['hypotheses_refined']})."
+              f"evaluated/refined={info['hypotheses_evaluated']}/{info['hypotheses_refined']}, "
+              f"workers={info['pose_workers_effective']}, "
+              f"BLAS limited={info['blas_threads_limited']})."
           )
           if info["effective_hypotheses"] >= 2.0:
               self._log_opt(
@@ -1061,6 +1063,10 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
                 "coefficient_norm": float(np.linalg.norm(pose_result.coefficients)),
                 "registration_scale": float(pose_result.scale),
                 "registration_size_ratio": float(pose_info.get("size_ratio", np.nan)),
+                "pose_workers_requested": int(pose_info.get("pose_workers_requested", 1)),
+                "pose_workers_effective": int(pose_info.get("pose_workers_effective", 1)),
+                "blas_threads_limited": bool(pose_info.get("blas_threads_limited", False)),
+                "dense_completion_skipped": True,
                 "downstream_rigid": True,
               }
               if status_callback:
@@ -1270,14 +1276,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       modes,
       eig,
       settings,
-      max_iterations=int(parameters.get("max_iterations", 250)),
-      tolerance=float(parameters.get("tolerance", 1e-6)),
       with_scale=with_scale,
-      # Match the dense likelihood used by pose-marginalized refinement. A
-      # small-k sparse completion can pull a valid small residual scale into a
-      # local collapsed solution; keep it available only as an explicit opt-in.
-      use_kdtree=bool(parameters.get("poseFinalUseKDTree", False)),
-      k_neighbors=int(parameters.get("poseFinalNeighbors", 10)),
       source_scale=source_scale,
     )
     points = result.points
@@ -1285,9 +1284,10 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     registered_diag = float(np.linalg.norm(np.ptp(points, axis=0)))
     size_ratio = registered_diag / max(target_diag, np.finfo(float).eps)
     if with_scale and size_ratio < 0.1:
-      raise RuntimeError(
-        "Pose EM produced a collapsed template "
-        f"(registered/target size ratio={size_ratio:.4g}, scale={result.scale:.4g})."
+      logging.warning(
+        "[pose-em] Diagnostic similarity pose has a small size ratio "
+        f"({size_ratio:.4g}, scale={result.scale:.4g}); retaining the selected "
+        "SSM coefficients because downstream scaling and rigid alignment remain active."
       )
     return np.asarray(points, dtype=float), result
 
@@ -1349,6 +1349,10 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       "hypotheses_evaluated": int(result.hypotheses_evaluated),
       "hypotheses_refined": int(result.hypotheses_refined),
       "scale": float(result.scale),
+      "pose_workers_requested": int(result.final_parameters["pose_workers_requested"]),
+      "pose_workers_effective": int(result.final_parameters["pose_workers_effective"]),
+      "blas_threads_limited": bool(result.final_parameters["blas_threads_limited"]),
+      "dense_completion_skipped": True,
       "size_ratio": float(
         np.linalg.norm(np.ptp(registeredCorr, axis=0)) /
         max(np.linalg.norm(np.ptp(target, axis=0)), np.finfo(float).eps)

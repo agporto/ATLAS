@@ -1,5 +1,6 @@
 import sys
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,37 +25,28 @@ from Resources.Python.PoseEMTemplate import (
 )
 
 
-class _FakeRegistration:
-    last = None
+class _ControlledBLAS:
+    def __init__(self):
+        self.limited = False
 
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
-        self.initial_state = None
-        _FakeRegistration.last = self
+    def select(self, **kwargs):
+        return SimpleNamespace(lib_controllers=[object()])
 
-    def set_initial_state(self, coefficients, rotation, scale, translation, world_units=True):
-        self.initial_state = (
-            np.asarray(coefficients).copy(),
-            np.asarray(rotation).copy(),
-            float(scale),
-            np.asarray(translation).copy(),
-            bool(world_units),
-        )
+    @contextmanager
+    def limit(self, **kwargs):
+        self.limited = True
+        self.limit_kwargs = kwargs
+        yield
 
-    def register(self):
-        coefficients, rotation, scale, translation, _ = self.initial_state
-        shaped = ssm_sample(self.kwargs["Y"], self.kwargs["U"], coefficients)
-        points = scale * (shaped @ rotation.T) + translation
-        return points, {
-            "b": coefficients.reshape(-1, 1),
-            "R_world": rotation,
-            "s_world": scale,
-            "t_world": translation,
-        }
+
+class _UnsupportedBLAS:
+    def select(self, **kwargs):
+        return SimpleNamespace(lib_controllers=[])
 
 
 def _initializer(coefficients, rotation, scale, translation):
     def initialize(*args, **kwargs):
+        initialize.calls.append(kwargs)
         return SimpleNamespace(
             coefficients=np.asarray(coefficients),
             rotation=np.asarray(rotation),
@@ -67,6 +59,7 @@ def _initializer(coefficients, rotation, scale, translation):
             hypotheses_evaluated=61,
             hypotheses_refined=2,
         )
+    initialize.calls = []
     return initialize
 
 
@@ -192,6 +185,44 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
         self.assertIn('self.poseRefineSourceCount.setSpecialValueText("Full source")', source)
         self.assertIn("self.poseLambdaReg.value=0.10", source)
         self.assertIn("self.poseOutlierWeight.value=0.05", source)
+        self.assertIn("self.poseNJobs.value=4", source)
+
+    def test_supported_blas_uses_requested_workers_under_local_single_thread_limit(self):
+        mean = np.array([[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        modes = np.zeros((2, 3, 1))
+        initializer = _initializer([0.0], np.eye(3), 1.0, [[0.0, 0.0, 0.0]])
+        controller = _ControlledBLAS()
+        result = run_pose_em_registration(
+            mean, mean, modes, np.array([1.0]),
+            PoseEMSettings(rotation_count=12, n_jobs=4),
+            with_scale=True,
+            initializer=initializer,
+            controller_factory=lambda: controller,
+        )
+        self.assertEqual(initializer.calls[0]["n_jobs"], 4)
+        self.assertTrue(controller.limited)
+        self.assertEqual(controller.limit_kwargs, {"limits": 1, "user_api": "blas"})
+        self.assertEqual(result.final_parameters["pose_workers_effective"], 4)
+        self.assertTrue(result.final_parameters["blas_threads_limited"])
+
+    def test_unsupported_blas_falls_back_to_one_pose_worker(self):
+        mean = np.array([[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        modes = np.zeros((2, 3, 1))
+        initializer = _initializer([0.0], np.eye(3), 1.0, [[0.0, 0.0, 0.0]])
+        result = run_pose_em_registration(
+            mean, mean, modes, np.array([1.0]),
+            PoseEMSettings(rotation_count=12, n_jobs=4),
+            with_scale=True,
+            initializer=initializer,
+            controller_factory=_UnsupportedBLAS,
+        )
+        self.assertEqual(initializer.calls[0]["n_jobs"], 1)
+        self.assertEqual(result.final_parameters["pose_workers_effective"], 1)
+        self.assertFalse(result.final_parameters["blas_threads_limited"])
+
+    def test_template_selection_skips_redundant_dense_completion(self):
+        helper = (PREDICT_DIR / "Resources/Python/PoseEMTemplate.py").read_text(encoding="utf-8")
+        self.assertNotIn("registration.register()", helper)
 
     def test_ssm_sample_uses_native_coefficients_without_sqrt_eigen_scaling(self):
         mean = np.zeros((2, 3))
@@ -222,19 +253,13 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
         rotation = Rotation.from_euler("xyz", [10.0, -15.0, 25.0], degrees=True).as_matrix()
         translation = np.array([[2.0, -1.0, 0.4]])
         target = 1.2 * (ssm_sample(mean, modes, coefficients) @ rotation.T) + translation
+        initializer = _initializer(coefficients, rotation, 1.2, np.zeros((1, 3)))
         result = run_pose_em_registration(
             mean, target, modes, eigenvalues, PoseEMSettings(rotation_count=12),
-            max_iterations=40, tolerance=1e-6, with_scale=True,
-            initializer=_initializer(coefficients, rotation, 1.2, np.zeros((1, 3))),
-            registration_class=_FakeRegistration,
+            with_scale=True,
+            initializer=initializer,
+            controller_factory=_UnsupportedBLAS,
         )
-        state = _FakeRegistration.last.initial_state
-        self.assertFalse(_FakeRegistration.last.kwargs["use_kdtree"])
-        np.testing.assert_allclose(state[0], coefficients)
-        np.testing.assert_allclose(state[1], rotation)
-        self.assertAlmostEqual(state[2], 1.2)
-        np.testing.assert_allclose(state[3], np.zeros((1, 3)), atol=1e-12)
-        self.assertTrue(state[4])
         np.testing.assert_allclose(result.points, target, atol=1e-12)
         np.testing.assert_allclose(result.translation, translation, atol=1e-12)
         np.testing.assert_allclose(
@@ -243,6 +268,7 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
             atol=1e-12,
         )
         self.assertEqual(result.hypotheses_evaluated, 61)
+        self.assertTrue(result.final_parameters["dense_completion_skipped"])
 
     def test_fixed_scale_handoff_recenters_pose_and_disables_scale_optimization(self):
         mean = np.array([[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -252,11 +278,10 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
         target = mean @ rotation.T + np.array([3.0, -2.0, 0.5])
         result = run_pose_em_registration(
             mean, target, modes, eigenvalues, PoseEMSettings(rotation_count=12),
-            max_iterations=10, tolerance=1e-6, with_scale=False,
+            with_scale=False,
             initializer=_initializer([0.0], rotation, 0.4, [[9.0, 9.0, 9.0]]),
-            registration_class=_FakeRegistration,
+            controller_factory=_UnsupportedBLAS,
         )
-        self.assertFalse(_FakeRegistration.last.kwargs["with_scale"])
         self.assertAlmostEqual(result.scale, 1.0)
         np.testing.assert_allclose(result.points.mean(0), target.mean(0), atol=1e-12)
 
@@ -267,9 +292,9 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
         source_scale = coverage_prescale(mean, target, coverage=0.5)
         result = run_pose_em_registration(
             mean, target, modes, np.array([1.0]), PoseEMSettings(rotation_count=12),
-            max_iterations=10, tolerance=1e-6, with_scale=False, source_scale=source_scale,
+            with_scale=False, source_scale=source_scale,
             initializer=_initializer([0.0], np.eye(3), 0.5, [[0.0, 0.0, 0.0]]),
-            registration_class=_FakeRegistration,
+            controller_factory=_UnsupportedBLAS,
         )
         self.assertAlmostEqual(source_scale, 0.5)
         self.assertAlmostEqual(result.scale, source_scale)
@@ -277,7 +302,7 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
 
 
 class PoseEMTemplateIntegrationTest(unittest.TestCase):
-    def test_small_offset_target_retains_scale(self):
+    def test_small_offset_target_retains_template_shape_without_dense_completion(self):
         try:
             from biocpd import pose_marginalized_initialization
         except (ImportError, AttributeError):
@@ -305,13 +330,12 @@ class PoseEMTemplateIntegrationTest(unittest.TestCase):
         )
         result = run_pose_em_registration(
             mean, target, modes, eigenvalues, settings,
-            max_iterations=100, tolerance=1e-5, with_scale=True,
+            with_scale=True,
         )
-        registered_diagonal = np.linalg.norm(np.ptp(result.points, axis=0))
-        target_diagonal = np.linalg.norm(np.ptp(target, axis=0))
-        self.assertGreater(registered_diagonal / target_diagonal, 0.9)
-        self.assertLess(registered_diagonal / target_diagonal, 1.1)
-        self.assertGreater(result.scale, 0.05)
+        selected_shape = ssm_sample(mean, modes, result.coefficients)
+        self.assertGreater(np.linalg.norm(np.ptp(selected_shape, axis=0)), 0.9)
+        self.assertTrue(np.isfinite(result.coefficients).all())
+        self.assertTrue(result.final_parameters["dense_completion_skipped"])
 
     def test_large_rotation_recovery_through_atlas_adapter(self):
         try:
@@ -343,7 +367,7 @@ class PoseEMTemplateIntegrationTest(unittest.TestCase):
         )
         result = run_pose_em_registration(
             mean, target, modes, eigenvalues, settings,
-            max_iterations=120, tolerance=1e-5, with_scale=True, use_kdtree=False,
+            with_scale=True,
         )
         error = np.median(np.linalg.norm(result.points - target, axis=1))
         diagonal = np.linalg.norm(np.ptp(target, axis=0))

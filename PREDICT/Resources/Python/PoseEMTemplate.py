@@ -234,15 +234,51 @@ def fixed_scale_translation(source: np.ndarray, target: np.ndarray, rotation: np
     return (target.mean(axis=0) - source.mean(axis=0) @ rotation.T).reshape(1, 3)
 
 
-def _biocpd_api() -> tuple[Callable[..., Any], type]:
+def _biocpd_api() -> Callable[..., Any]:
     try:
-        from biocpd import AtlasRegistration, pose_marginalized_initialization
+        from biocpd import pose_marginalized_initialization
     except (ImportError, AttributeError) as exc:
         raise RuntimeError(
-            "Pose EM template optimization requires biocpd 1.3.0 or newer. "
+            "Pose EM template optimization requires biocpd 1.3 or newer. "
             "Upgrade biocpd in the Slicer Python environment."
         ) from exc
-    return pose_marginalized_initialization, AtlasRegistration
+    return pose_marginalized_initialization
+
+
+def _initialize_with_thread_policy(
+    initializer: Callable[..., Any],
+    initializer_args: tuple[Any, ...],
+    initializer_kwargs: Mapping[str, Any],
+    requested_n_jobs: int,
+    controller_factory: Optional[Callable[[], Any]] = None,
+) -> tuple[Any, int, bool]:
+    """Limit nested BLAS threads when supported, otherwise use one pose worker."""
+    if controller_factory is None:
+        try:
+            from threadpoolctl import ThreadpoolController
+        except ImportError:
+            ThreadpoolController = None
+        controller_factory = ThreadpoolController
+
+    controller = None
+    if controller_factory is not None:
+        try:
+            candidate = controller_factory()
+            if candidate.select(user_api="blas").lib_controllers:
+                controller = candidate
+        except Exception:
+            controller = None
+
+    effective_n_jobs = int(requested_n_jobs) if controller is not None else 1
+    kwargs = dict(initializer_kwargs)
+    kwargs["n_jobs"] = effective_n_jobs
+    if controller is None:
+        return initializer(*initializer_args, **kwargs), effective_n_jobs, False
+
+    # Keep the limit local to Pose EM. Independent hypotheses run in Python
+    # workers while each supported BLAS backend stays sequential.
+    with controller.limit(limits=1, user_api="blas"):
+        return initializer(*initializer_args, **kwargs), effective_n_jobs, True
 
 
 def run_pose_em_registration(
@@ -252,14 +288,10 @@ def run_pose_em_registration(
     eigenvalues: np.ndarray,
     settings: PoseEMSettings,
     *,
-    max_iterations: int,
-    tolerance: float,
     with_scale: bool,
-    use_kdtree: bool = False,
-    k_neighbors: int = 10,
     source_scale: float = 1.0,
     initializer: Optional[Callable[..., Any]] = None,
-    registration_class: Optional[type] = None,
+    controller_factory: Optional[Callable[[], Any]] = None,
 ) -> PoseEMRegistrationResult:
     mean, modes, eigenvalues = validate_ssm(mean, modes, eigenvalues)
     target = np.asarray(target, dtype=np.float64)
@@ -269,28 +301,23 @@ def run_pose_em_registration(
     if source_scale <= 0 or not np.isfinite(source_scale):
         raise ValueError("source_scale must be finite and positive")
 
-    # Pose and shape are translation invariant, but AtlasRegistration performs
-    # its normalized similarity updates in float32. Passing a small object at a
-    # large world-coordinate offset makes those updates subtract large, nearly
-    # equal translations and can drive the estimated scale to zero. Work in
-    # independent centroid frames, then compose back to world coordinates.
+    # Work in independent centroid frames so large Slicer world-coordinate
+    # offsets do not reduce the precision of the similarity initialization.
     source_centroid = mean.mean(axis=0, keepdims=True)
     target_centroid = target.mean(axis=0, keepdims=True)
     working_mean = (mean - source_centroid) * float(source_scale)
     working_target = target - target_centroid
     working_modes = modes * float(source_scale)
-    if initializer is None or registration_class is None:
-        default_initializer, default_registration = _biocpd_api()
-        initializer = default_initializer if initializer is None else initializer
-        registration_class = default_registration if registration_class is None else registration_class
+    if initializer is None:
+        initializer = _biocpd_api()
     _require_real_data_initializer(initializer)
 
-    initial = initializer(
-        working_mean,
-        working_target,
-        working_modes,
-        eigenvalues,
-        **settings.initializer_kwargs(),
+    initial, effective_n_jobs, blas_limited = _initialize_with_thread_policy(
+        initializer,
+        (working_mean, working_target, working_modes, eigenvalues),
+        settings.initializer_kwargs(),
+        settings.n_jobs,
+        controller_factory=controller_factory,
     )
     coefficients = np.asarray(initial.coefficients, dtype=np.float64).reshape(-1)
     rotation = np.asarray(initial.rotation, dtype=np.float64)
@@ -302,58 +329,36 @@ def run_pose_em_registration(
         scale = 1.0
         translation = fixed_scale_translation(initial_shape, working_target, rotation)
 
-    registration = registration_class(
-        X=working_target,
-        Y=working_mean,
-        U=working_modes,
-        eigenvalues=eigenvalues,
-        lambda_reg=settings.lambda_reg,
-        normalize=True,
-        optimize_similarity=True,
-        with_scale=bool(with_scale),
-        use_kdtree=bool(use_kdtree),
-        k=max(1, int(k_neighbors)),
-        w=settings.outlier_weight,
-        max_iterations=max(1, int(max_iterations)),
-        tolerance=max(0.0, float(tolerance)),
-        dtype=np.float32,
-    )
-    registration.set_initial_state(
-        coefficients,
-        rotation,
-        scale,
-        translation,
-        world_units=True,
-    )
-    points_centered, final_parameters = registration.register()
-    final_coefficients = np.asarray(final_parameters.get("b", coefficients), dtype=np.float64).reshape(-1)
-    final_rotation = np.asarray(final_parameters.get("R_world", rotation), dtype=np.float64)
-    residual_scale = float(final_parameters.get("s_world", scale))
-    centered_translation = np.asarray(
-        final_parameters.get("t_world", translation), dtype=np.float64
-    ).reshape(1, 3)
-    final_scale = float(source_scale) * residual_scale
+    # The initializer has already refined its finalists. Template optimization
+    # needs only those coefficients; a second dense AtlasRegistration pass was
+    # redundant and its registered coordinates were discarded by PREDICT.
+    points_centered = scale * (initial_shape @ rotation.T) + translation
+    final_scale = float(source_scale) * scale
     final_translation = (
-        centered_translation
+        translation
         + target_centroid
-        - final_scale * (source_centroid @ final_rotation.T)
+        - final_scale * (source_centroid @ rotation.T)
     )
     points = np.asarray(points_centered, dtype=np.float64) + target_centroid
-    final_parameters = dict(final_parameters)
-    final_parameters.update({
-        "R_world": final_rotation,
+    final_parameters = {
+        "b": coefficients.reshape(-1, 1),
+        "R_world": rotation,
         "s_world": final_scale,
         "t_world": final_translation,
-        "s_preconditioned": residual_scale,
-        "t_preconditioned": centered_translation,
+        "s_preconditioned": scale,
+        "t_preconditioned": translation,
         "source_centroid": source_centroid.copy(),
         "target_centroid": target_centroid.copy(),
         "source_scale": float(source_scale),
-    })
+        "pose_workers_requested": int(settings.n_jobs),
+        "pose_workers_effective": effective_n_jobs,
+        "blas_threads_limited": blas_limited,
+        "dense_completion_skipped": True,
+    }
     return PoseEMRegistrationResult(
         points=points,
-        coefficients=final_coefficients,
-        rotation=final_rotation,
+        coefficients=coefficients,
+        rotation=rotation,
         scale=final_scale,
         translation=final_translation,
         score=float(initial.score),

@@ -104,8 +104,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
   # ----- Dependencies installer (async-safe) -----
   def _ensure_deps_async(self):
     import importlib.util, inspect, traceback, sys, subprocess
-    biocpdSpec="git+https://github.com/agporto/biocpd.git@codex/real-data-registration"
-    required=[("tiny3d","tiny3d"),("biocpd",biocpdSpec)]
+    required=[("tiny3d","tiny3d"),("biocpd","biocpd>=1.3")]
 
     def hasPoseRealDataAPI():
         try:
@@ -126,8 +125,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
         elif module_name == "biocpd" and not hasPoseRealDataAPI():
             missing.append(module_name)
     if missing:
-        labels=[("biocpd real-data registration branch" if name == "biocpd" else spec)
-                for name,spec in required if name in missing]
+        labels=[spec for name,spec in required if name in missing]
         msg="PREDICT needs or must upgrade: "+", ".join(labels)+".\nInstall now?"
         if not slicer.util.confirmOkCancelDisplay(msg):
             slicer.util.errorDisplay("Dependencies not installed; some actions may fail."); return
@@ -136,7 +134,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
         try:
             if missing:
                 specs=[spec for m,spec in required if m in missing]
-                subprocess.check_call([sys.executable,"-m","pip","install",*specs])
+                subprocess.check_call([sys.executable,"-m","pip","install","--upgrade",*specs])
                 if "biocpd" in missing:
                     for module_name in [name for name in sys.modules if name == "biocpd" or name.startswith("biocpd.")]:
                         sys.modules.pop(module_name, None)
@@ -144,7 +142,9 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
             for m in ("tiny3d","biocpd","scipy.spatial","scipy.optimize"):
                 importlib.import_module(m)
             if not hasPoseRealDataAPI():
-                raise RuntimeError("Installed biocpd does not provide the real-data Pose-EM API.")
+                raise RuntimeError(
+                    "The installed biocpd>=1.3 wheel does not provide the required Pose-EM API."
+                )
         except Exception as e:
             self._deps_error=(e, traceback.format_exc())
         else:

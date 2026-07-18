@@ -88,7 +88,8 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
         self.assertIn("logic.initialize_template_pose_em", source)
         self.assertIn("self.runPoseEMDeformable", source)
         self.assertIn('"pose_em_diagnostics.json"', source)
-        self.assertIn("codex/real-data-registration", source)
+        self.assertIn('("biocpd","biocpd>=1.3")', source)
+        self.assertNotIn("git+https://", source)
 
     def test_pose_em_never_bypasses_standard_alignment_stages(self):
         source = (PREDICT_DIR / "PREDICT.py").read_text(encoding="utf-8")

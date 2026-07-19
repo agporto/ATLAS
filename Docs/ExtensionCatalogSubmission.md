@@ -6,7 +6,7 @@ ATLAS is prepared for an initial Tier 1 submission to the Slicer ExtensionsIndex
 
 Before opening the ExtensionsIndex pull request:
 
-- Add the GitHub topic `3d-slicer-extension` to the ATLAS repository.
+- Add the GitHub topic `3d-slicer-extension` to the SlicerATLAS repository.
 - Keep `SlicerMorph` documented as a complementary extension, not a build dependency.
 - Confirm that the raw icon and screenshot URLs in the top-level `CMakeLists.txt` resolve from the `main` branch.
 - Merge this publication-preparation branch into `main`.
@@ -17,6 +17,7 @@ Copy `ExtensionsIndex/ATLAS.json` into the root of a fork of `Slicer/ExtensionsI
 
 The entry intentionally uses:
 
+- Repository: `https://github.com/agporto/SlicerATLAS.git`
 - Category: `Registration`
 - Revision: `main`
 - Build dependencies: none
@@ -38,8 +39,7 @@ No SlicerMorph dependency or bundled test dataset is required for the initial Ti
 
 State that:
 
-- ATLAS is an established software name, which is why the repository is not named `SlicerATLAS`.
+- The repository follows the recommended `Slicer+ExtensionName` naming convention while the extension remains displayed as ATLAS in Slicer.
 - The extension operates locally and does not upload user data.
 - Python dependencies are obtained from the configured Python package index with explicit user approval.
-- No related patents are known.
 - The source is released under the BSD 2-Clause License.

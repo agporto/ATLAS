@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="tutorial/README.md"><strong>Tutorial</strong></a> ·
-  <a href="https://github.com/agporto/ATLAS/issues"><strong>Issues</strong></a> ·
+  <a href="https://github.com/agporto/SlicerATLAS/issues"><strong>Issues</strong></a> ·
   <a href="https://discourse.slicer.org/"><strong>Slicer Forum</strong></a>
 </p>
 
@@ -47,7 +47,7 @@ Once listed in the official Slicer Extensions Catalog:
 ### Developer installation
 
 ```bash
-git clone https://github.com/agporto/ATLAS.git
+git clone https://github.com/agporto/SlicerATLAS.git
 ```
 
 In Slicer, open **Developer Tools > Extension Wizard**, choose **Select Extension**, and select the cloned repository folder.
@@ -119,7 +119,7 @@ The Pose-marginalized EM backend is optional. The established FPFH + RANSAC temp
 ## Documentation and support
 
 - [ATLAS tutorial](tutorial/README.md)
-- [Issue tracker](https://github.com/agporto/ATLAS/issues)
+- [Issue tracker](https://github.com/agporto/SlicerATLAS/issues)
 - [3D Slicer documentation](https://slicer.readthedocs.io/)
 - [SlicerMorph tutorials](https://github.com/SlicerMorph/Tutorials)
 - [Slicer Forum](https://discourse.slicer.org/) — use the *Morphology* or *Extensions* categories
@@ -143,7 +143,7 @@ Until the formal ATLAS publication is available, cite the software repository:
 
 ```text
 Porto, A. ATLAS: Automated Template-based Landmark Alignment System.
-https://github.com/agporto/ATLAS
+https://github.com/agporto/SlicerATLAS
 ```
 
 Please also cite the methods and software used by the relevant workflow, including 3D Slicer, SlicerMorph when used, DeCA for related dense-correspondence analyses, and the `biocpd` or `tiny3d` documentation as appropriate.

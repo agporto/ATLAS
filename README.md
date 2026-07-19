@@ -67,6 +67,8 @@ A complete illustrated walkthrough is available in the [ATLAS tutorial](tutorial
 
 Constructs an anatomical atlas from folders of surface models and corresponding sparse landmarks. BUILDER selects a representative reference, aligns the specimens, generates a mean surface, and derives index-consistent dense correspondences.
 
+BUILDER was originally adapted from the Dense Correspondence Landmarking (DeCAL) workflow in [SlicerDenseCorrespondenceAnalysis](https://github.com/SlicerMorph/SlicerDenseCorrespondenceAnalysis), developed by the SlicerMorph project. It substantially restructures and extends that workflow for ATLAS, including more robust model-landmark pairing, coordinate-system validation, mesh-quality safeguards, revised atlas construction, optional biharmonic deformation with TPS fallback, index-stable dense correspondence export, and direct integration with the DATABASE and PREDICT modules. See [BUILDER attribution and lineage](BUILDER/README.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
+
 **Primary outputs**
 
 - aligned models and landmarks;
@@ -146,11 +148,11 @@ Porto, A. ATLAS: Automated Template-based Landmark Alignment System.
 https://github.com/agporto/SlicerATLAS
 ```
 
-Please also cite the methods and software used by the relevant workflow, including 3D Slicer, SlicerMorph when used, DeCA for related dense-correspondence analyses, and the `biocpd` or `tiny3d` documentation as appropriate.
+When using BUILDER, also cite the relevant SlicerDenseCorrespondenceAnalysis/DeCA software and publication. Please additionally cite the methods and software used by the relevant workflow, including 3D Slicer, SlicerMorph when used, and the `biocpd` or `tiny3d` documentation as appropriate.
 
 ## License
 
-ATLAS is distributed under the [BSD 2-Clause License](LICENSE.txt).
+ATLAS is distributed under the [BSD 2-Clause License](LICENSE.txt). Portions of BUILDER were adapted from SlicerDenseCorrespondenceAnalysis under its BSD 2-Clause License; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Maintainer
 

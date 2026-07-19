@@ -1,196 +1,158 @@
-<!-- ATLAS README -->
-
 <p align="center">
-	<img src="logo.png" alt="ATLAS Logo" width="500"/>
+  <img src="logo.png" alt="ATLAS logo" width="460">
 </p>
 
-# ATLAS: Scaling 3D morphometrics across biodiversity with atlas-based automated landmarking
+<h1 align="center">ATLAS</h1>
 
-ATLAS is a companion extension to **SlicerMorph**, focused on high‑fidelity, scalable generation and transfer of 3D anatomical landmarks and dense correspondences using atlas construction, Statistical Shape Models (SSMs), and PCA‑guided deformable registration.
+<p align="center"><strong>Scaling 3D morphometrics with atlas-based automated landmarking</strong></p>
 
-It streamlines:
+<p align="center">
+  A 3D Slicer extension for anatomical atlas construction, statistical shape modeling, deformable registration, and automated landmark transfer.
+</p>
 
-* Building an atlas (mean model + dense correspondences) from meshes and sparse landmarks
-* Constructing and persisting PCA Statistical Shape Models for variation exploration
-* Single and batch automated landmark transfer with robust rigid + PCA‑CPD deformable alignment and optional surface projection
-* Continuous optimization of the template (pose + shape) before large batch runs
-* Segmentation of the 3D model into parts
+<p align="center">
+  <a href="tutorial/README.md"><strong>Tutorial</strong></a> ·
+  <a href="https://github.com/agporto/ATLAS/issues"><strong>Issues</strong></a> ·
+  <a href="https://discourse.slicer.org/"><strong>Slicer Forum</strong></a>
+</p>
 
-> If you are new to 3D Slicer or SlicerMorph, begin with SlicerMorph tutorials first. ATLAS assumes you already understand loading models, markups, and basic scene management.
+<p align="center">
+  <img src="tutorial/images/20.png" alt="ATLAS landmark-transfer result in 3D Slicer" width="760">
+</p>
 
----
-## Table of Contents
-1. [Installation](#installation)
-2. [How to Cite](#how-to-cite)
-3. [Updating ATLAS](#updating-atlas)
-4. [Module Descriptions](#module-descriptions)
-5. [Dependencies](#dependencies)
-	* [Automatically Installed Python Packages](#automatically-installed-python-packages)
-	* [Optional / Recommended Slicer Extensions](#optional--recommended-slicer-extensions)
-6. [Related / Complementary Extensions](#related--complementary-extensions)
-7. [Tutorials & Learning Resources](#tutorials--learning-resources)
-8. [Important Websites](#important-websites)
-9. [Funding Acknowledgement](#funding-acknowledgement)
-10. [License](#license)
-11. [About](#about)
+## Overview
 
----
+ATLAS provides an integrated workflow for generating and applying 3D anatomical atlases. It supports:
+
+- construction of mean atlas surfaces and dense correspondences from meshes and sparse landmarks;
+- creation and interactive exploration of PCA-based statistical shape models;
+- single-specimen and batch landmark transfer using rigid and shape-model-guided deformable registration;
+- target-specific template optimization before registration; and
+- correspondence-guided segmentation of surface models.
+
+ATLAS runs within [3D Slicer](https://www.slicer.org/). [SlicerMorph](https://slicermorph.github.io/) is recommended for complementary morphometric workflows but is not required.
+
 ## Installation
 
-### 1. From 3D Slicer Extension Manager (future distribution)
-When ATLAS becomes available through the Extension Manager, install it like any other extension. (Currently under active development; interim manual install below.)
+### 3D Slicer Extension Manager
 
-### 2. Manual (Developer) Installation
-1. Clone the repository outside your Slicer install:
-	```bash
-	git clone https://github.com/agporto/ATLAS.git
-	```
-2. Add the cloned top‑level folder to Slicer using the main dropdown menu: `Developer Tools> Extension Wizard` → Select Extension → Select Folder.
-3. Open one of the ATLAS modules (`BUILDER`, `DATABASE`, `PREDICT`, `SEGMENTATION`) to confirm load.
+Once listed in the official Slicer Extensions Catalog:
 
-### 3. Cloud / Remote Environments
-If you use a cloud Slicer image (e.g., MorphoCloud) you can clone the repo into a writable workspace and add the module path as above. Ensure outbound network allowed for Python dependency install (see below).
+1. Open 3D Slicer.
+2. Select **View > Extension Manager**.
+3. Search for **ATLAS** and click **Install**.
+4. Restart Slicer when prompted.
+5. Find the modules under the **ATLAS** category.
 
----
-## How to Cite
+### Developer installation
 
-If you use ATLAS in publications, please cite (placeholder until formal publication):
+```bash
+git clone https://github.com/agporto/ATLAS.git
 ```
-Porto, A. (2025). ATLAS: Automated Template-based Landmark Alignment System. GitHub repository. https://github.com/agporto/ATLAS
-```
-Also cite **SlicerMorph** (Rolfe et al. 2021, Methods in Ecology and Evolution) and 3D Slicer (Kikinis et al. 2014) where appropriate. If you use the BUILDER module, please cite **DeCA** (Rolfe and Maga , 2023).  If you use the underlying PCA‑CPD method (biocpd) or tiny3d backend, consult their respective citations.
 
----
-## Module Descriptions
+In Slicer, open **Developer Tools > Extension Wizard**, choose **Select Extension**, and select the cloned repository folder.
 
-ATLAS organizes functionality into four scripted modules:
+## Workflow
+
+1. **BUILDER** aligns training meshes and landmarks and creates an atlas surface with sparse and dense correspondences.
+2. **DATABASE** converts population correspondences into a PCA statistical shape model and loads it for exploration and registration.
+3. **PREDICT** transfers landmarks to individual specimens or batches using rigid registration, SSM-guided CPD, optional fine deformation, and surface projection.
+4. **SEGMENTATION** uses dense correspondences to divide homologous surface regions consistently across specimens.
+
+A complete illustrated walkthrough is available in the [ATLAS tutorial](tutorial/README.md).
+
+## Modules
 
 ### BUILDER
-**Category:** Atlas & Correspondence Generation  
 
-**Purpose:** Align a set of meshes and sparse landmark sets; automatically pick a reference (closest to mean), similarity-align all specimens, generate a mean (atlas) surface, and derive dense correspondences via TPS warp + k‑d tree mapping. Optionally downsamples to produce a sparser, index‑stable subset.  
+Constructs an anatomical atlas from folders of surface models and corresponding sparse landmarks. BUILDER selects a representative reference, aligns the specimens, generates a mean surface, and derives index-consistent dense correspondences.
 
-**Key Outputs:** Timestamped output folder containing aligned meshes (`alignedModels/*`), aligned landmarks (`alignedLMs/*`), atlas files (`atlas/atlas_model.ply`, `atlas/atlas_sparse_landmarks.mrk.json`), and sampled dense set (`atlas/atlas_dense_correspondences.mrk.json`) plus per-specimen dense correspondences in `population_correspondences/`.  
+**Primary outputs**
 
-**Notable Features:** Robust base selection; flexible file stem resolution; index preservation during downsampling.
+- aligned models and landmarks;
+- `atlas_model.ply`;
+- `atlas_sparse_landmarks.mrk.json`;
+- `atlas_dense_correspondences.mrk.json`; and
+- specimen-level population correspondences.
 
 ### DATABASE
 
-**Category:** Statistical Shape Modeling
+Builds and stores a PCA statistical shape model from dense population correspondences. DATABASE validates point consistency, computes the retained shape basis, saves the model, and provides interactive principal-component visualization in Slicer.
 
-**Purpose:** Build a PCA SSM from a folder of dense correspondences; store as a lightweight on‑disk database with manifest; load into scene for interactive mode exploration.  
+**Primary outputs**
 
-**Workflow:** Ingest → validate consistent point counts → SVD (variance threshold) → save mean, modes, eigenvalues.  
-
-**Visualization:** Single-PC slider + spinbox; deforms mesh in real time using k‑NN interpolation (weights from inverse distance) between landmark displacements and all vertices.  
-
-**Outputs:** `manifest.json`, `ssm_model.npz`, copied template and markup files.
+- `manifest.json`;
+- `ssm_model.npz`; and
+- the associated template model and markup files.
 
 ### PREDICT
-**Category:** Automated Landmark Transfer 
 
-**Purpose:** Transfer template sparse landmarks to a target mesh (single or batch) via multi-stage alignment: subsampling & FPFH features → RANSAC + ICP rigid alignment → PCA‑guided Coherent Point Drift (CPD) deformable registration → optional surface projection refinement. Batch mode can also optionally export the warped template mesh for each target.  
+Transfers template landmarks to target surface models in single or batch mode. The registration pipeline combines point-cloud subsampling, FPFH features, RANSAC and ICP rigid alignment, PCA-guided Coherent Point Drift, optional fine deformation, and optional surface projection.
 
-**Modes:**
-* Single specimen alignment (tune parameters, inspect intermediate clouds/models)  
-* Batch processing (reuse tuned parameters; cancellation + progress)  
-* Template optimization with two backends:
-  * **FPFH + RANSAC (current, default):** continuous SSM search scored by feature-based rigid registration.
-  * **Pose-marginalized EM (experimental):** deterministic global pose hypotheses followed by joint SSM-shape and similarity refinement under the CPD objective. Pose is used to evaluate the hypotheses, but only the selected SSM shape is applied to the template; the standard scaling, RANSAC + ICP rigid alignment, and deformable stages always run afterward.
+PREDICT also provides two target-specific template-optimization backends:
 
-**Outputs:** Predicted landmark `.mrk.json` files, warped template models (scene), optionally refined projected landmarks, and optional batch warped mesh exports as `.vtp` files.
+- **FPFH + RANSAC**, the default feature-based SSM search; and
+- **Pose-marginalized EM**, an experimental initializer that evaluates global pose hypotheses while jointly refining SSM shape and similarity pose.
+
+**Primary outputs**
+
+- predicted landmark `.mrk.json` files;
+- warped template models;
+- projected landmark refinements; and
+- optional batch mesh exports.
 
 ### SEGMENTATION
-**Category:** Surface Segmentation
 
-**Purpose:** Segment meshes into consistent anatomical regions using dense correspondences (`.mrk.json`) across a dataset and graph-based clustering.
+Segments homologous anatomical regions across meshes using dense correspondence trajectories and graph-based clustering. It exports labeled surface models and a label lookup table.
 
-**Workflow:** Pair meshes and correspondence files by base name -> build per-locus features across specimens -> construct weighted graph -> spectral clustering -> optional smoothing -> write labeled meshes.
+## Python dependencies
 
-**Outputs:** Segmented meshes (`*_seg.vtp`) with label arrays and a label lookup table.
+ATLAS uses Slicer-provided Python, VTK, NumPy, and SciPy. PREDICT additionally requires:
 
----
-## Dependencies
+- [`tiny3d`](https://pypi.org/project/tiny3d/) for point-cloud processing and rigid registration; and
+- [`biocpd>=1.3`](https://pypi.org/project/biocpd/) for shape-model-guided deformable registration and pose initialization.
 
-ATLAS is pure Python + VTK within Slicer, with two external Python packages used at runtime.
+When these packages are missing or incompatible, PREDICT asks for permission before installing or upgrading them through Slicer's Python environment. An internet connection is therefore required the first time those dependencies are installed.
 
-### Automatically Installed Python Packages
-On first use of PREDICT, a dialog offers to install:
-* **`tiny3d`** – lightweight point cloud / registration toolkit (Open3D style API)
-* **`biocpd>=1.3`** – the official wheel providing PCA‑guided CPD atlas registration and the experimental pose-marginalized initializer. PREDICT installs or upgrades it from the configured Python package index and validates the required initializer API at runtime.
+The Pose-marginalized EM backend is optional. The established FPFH + RANSAC template optimizer remains the default.
 
-The pose-EM backend is opt-in. Existing installations and batch workflows continue to use the current FPFH + RANSAC optimizer unless the experimental backend is selected in PREDICT's Template Optimization tab. Its algorithmic defaults mirror biocpd's real-data configuration: 193 total hypotheses, trajectory scoring, all coarse poses retained, full-source refinement, and initializer SSM/outlier weights of 0.1/0.05. PREDICT requests four independent pose workers and locally limits supported BLAS backends to one native thread; if the backend cannot be controlled, it safely falls back to one pose worker. The initializer's refined coefficients are applied directly to the template, avoiding a redundant dense atlas completion whose coordinates were discarded. Pose-EM diagnostics report scale, target-relative size, worker policy, score margin, posterior entropy/effective pose count, and evaluated/refined hypothesis counts. A small score margin or a high effective pose count may indicate rotational ambiguity, especially for symmetric anatomy. Batch runs also save these diagnostics to `pose_em_diagnostics.json` in the landmark output directory.
+## Documentation and support
 
-The Pose-EM adapter is packaged under PREDICT's private Python resources. It is not a standalone Slicer module and therefore is not presented to Slicer's scripted-module factory for instantiation.
+- [ATLAS tutorial](tutorial/README.md)
+- [Issue tracker](https://github.com/agporto/ATLAS/issues)
+- [3D Slicer documentation](https://slicer.readthedocs.io/)
+- [SlicerMorph tutorials](https://github.com/SlicerMorph/Tutorials)
+- [Slicer Forum](https://discourse.slicer.org/) — use the *Morphology* or *Extensions* categories
 
----
-## Related / Complementary Extensions
-* **SlicerMorph** – Broader morphology workflows (import, GPA, semi-landmarks, ALPACA).
-* **Dense Correspondence Analysis (DeCA)** – Downstream analysis of dense correspondences.
-* **ALPACA / MALPACA** (in SlicerMorph) – Alternative automated landmarking strategies; compare performance.
+For errors, open **View > Error Log** in Slicer and include the relevant traceback and reproduction steps in the issue report.
 
----
-## Tutorials & Learning Resources
-* ATLAS Tutorial: https://github.com/agporto/ATLAS/blob/main/tutorial/README.md 
+## Troubleshooting
 
-See other userful resources:
-* Use SlicerMorph tutorials for general data prep & landmark management: https://github.com/SlicerMorph/Tutorials
-* Explore parameter effects: run PREDICT Single mode on a representative specimen and inspect each intermediate node.
+| Issue | Likely cause | Suggested action |
+|---|---|---|
+| Landmark count mismatch in BUILDER | Input landmark files contain inconsistent numbers of points | Standardize landmark counts and regenerate the affected files |
+| Subsampling produces no points | Point density is too low or model scales differ substantially | Increase **Point Density** or enable scaling |
+| Poor RANSAC alignment | Feature radii or distance threshold are too restrictive | Increase the normal/FPFH radii or RANSAC distance threshold |
+| PCA-CPD stops early | The loaded SSM does not match the template correspondence count | Rebuild or reload the matching database |
+| Projection overshoots the surface | Projection distance is too large | Reduce the maximum projection factor |
+| Batch cancellation is delayed | The current specimen is completing a long registration step | Allow the current step to finish or reduce RANSAC iterations |
 
-Planned documents (placeholders):
-* Quick Start Atlas Build
-* Batch Landmark Transfer Best Practices
-* Template Optimization Guide
+## Citation
 
----
-## Important Websites
-* 3D Slicer: https://www.slicer.org
-* SlicerMorph: https://slicermorph.github.io
-* DeCA: https://github.com/SlicerMorph/SlicerDenseCorrespondenceAnalysis
-* ATLAS repository: https://github.com/agporto/ATLAS
-* Slicer Forum (support/discussion): https://discourse.slicer.org (use the `morphology` or `extensions` categories).
+Until the formal ATLAS publication is available, cite the software repository:
 
----
-## Funding Acknowledgement
-Coming soon
-
----
-## License
-Released under the **BSD 2-Clause License**. See the [`LICENSE`](LICENSE) file for full text.
-
-If you redistribute modified versions, please retain attribution and clearly document changes.
-
----
-## About
-**Author / Maintainer:** Arthur Porto  
-**Scope:** Atlas construction, SSM building, automated & optimized morphometric landmark transfer.  
-**Status:** Active development (2025). Feedback and contributions welcome via Issues and Pull Requests.
-
----
-## Quick Start (Condensed)
 ```text
-1. BUILDER: Provide model + landmark folders -> Run -> get atlas + dense correspondences.
-2. DATABASE: Ingest atlas model + dense + sparse + population folder -> Build SSM -> Load.
-3. PREDICT (Single): Tune parameters, run Rigid (RANSAC+ICP) -> Deformable (PCA-CPD) -> optional Projection.
-4. PREDICT (Template Optimization): Improve template before large batch.
-5. PREDICT (Batch): Apply tuned settings to directory of targets -> landmark `.mrk.json` outputs, with optional warped mesh `.vtp` exports.
-6. SEGMENTATION (optional): Use dense correspondences to segment target meshes into consistent regions.
+Porto, A. ATLAS: Automated Template-based Landmark Alignment System.
+https://github.com/agporto/ATLAS
 ```
 
----
-## Troubleshooting
-| Issue | Likely Cause | Remedy |
-|-------|--------------|--------|
-| Landmark count mismatch (BUILDER) | Inconsistent input landmark files | Standardize counts & regenerate outliers |
-| Subsampling produced 0 points | Point density too low / extreme scale difference | Increase pointDensity or disable skipScaling |
-| RANSAC fitness low | distanceThreshold too small / poor normals | Increase threshold / radii; check mesh quality |
-| PCA‑CPD aborts early | Wrong SSM (point count mismatch) | Rebuild or reload matching database |
-| Projection overshoot | projectionFactor too large | Decrease factor (1–3%) |
-| Batch cancel slow | Large per-specimen transforms | Allow current specimen to finish; reduce RANSAC iters |
+Please also cite the methods and software used by the relevant workflow, including 3D Slicer, SlicerMorph when used, DeCA for related dense-correspondence analyses, and the `biocpd` or `tiny3d` documentation as appropriate.
 
-Enable `View > Error Log` in Slicer for stack traces; include logs in Issues.
+## License
 
----
+ATLAS is distributed under the [BSD 2-Clause License](LICENSE.txt).
 
----
-*Last updated:* 2025-08-23
+## Maintainer
+
+**Arthur Porto**  
+Florida Museum of Natural History, University of Florida

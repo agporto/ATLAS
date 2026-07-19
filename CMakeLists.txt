@@ -11,4 +11,13 @@ set(EXTENSION_ICONURL "https://raw.githubusercontent.com/agporto/SlicerATLAS/mai
 set(EXTENSION_SCREENSHOTURLS "https://raw.githubusercontent.com/agporto/SlicerATLAS/main/tutorial/images/20.png")
 set(EXTENSION_DEPENDS "")
 
-find_package(S
+find_package(Slicer REQUIRED)
+include(${Slicer_USE_FILE})
+
+add_subdirectory(PREDICT)
+add_subdirectory(BUILDER)
+add_subdirectory(DATABASE)
+add_subdirectory(SEGMENTATION)
+
+include(${Slicer_EXTENSION_GENERATE_CONFIG})
+include(${Slicer_EXTENSION_CPACK})

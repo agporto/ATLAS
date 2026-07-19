@@ -94,7 +94,9 @@ ATLAS organizes functionality into four scripted modules:
 **Modes:**
 * Single specimen alignment (tune parameters, inspect intermediate clouds/models)  
 * Batch processing (reuse tuned parameters; cancellation + progress)  
-* Template optimization (continuous search in SSM space + RANSAC scoring to refine initial template pose/shape)  
+* Template optimization with two backends:
+  * **FPFH + RANSAC (current, default):** continuous SSM search scored by feature-based rigid registration.
+  * **Pose-marginalized EM (experimental):** deterministic global pose hypotheses followed by joint SSM-shape and similarity refinement under the CPD objective. Pose is used to evaluate the hypotheses, but only the selected SSM shape is applied to the template; the standard scaling, RANSAC + ICP rigid alignment, and deformable stages always run afterward.
 
 **Outputs:** Predicted landmark `.mrk.json` files, warped template models (scene), optionally refined projected landmarks, and optional batch warped mesh exports as `.vtp` files.
 
@@ -115,7 +117,11 @@ ATLAS is pure Python + VTK within Slicer, with two external Python packages used
 ### Automatically Installed Python Packages
 On first use of PREDICT, a dialog offers to install:
 * **`tiny3d`** – lightweight point cloud / registration toolkit (Open3D style API)
-* **`biocpd`** – PCA‑guided CPD atlas registration
+* **`biocpd>=1.3`** – the official wheel providing PCA‑guided CPD atlas registration and the experimental pose-marginalized initializer. PREDICT installs or upgrades it from the configured Python package index and validates the required initializer API at runtime.
+
+The pose-EM backend is opt-in. Existing installations and batch workflows continue to use the current FPFH + RANSAC optimizer unless the experimental backend is selected in PREDICT's Template Optimization tab. Its algorithmic defaults mirror biocpd's real-data configuration: 193 total hypotheses, trajectory scoring, all coarse poses retained, full-source refinement, and initializer SSM/outlier weights of 0.1/0.05. PREDICT requests four independent pose workers and locally limits supported BLAS backends to one native thread; if the backend cannot be controlled, it safely falls back to one pose worker. The initializer's refined coefficients are applied directly to the template, avoiding a redundant dense atlas completion whose coordinates were discarded. Pose-EM diagnostics report scale, target-relative size, worker policy, score margin, posterior entropy/effective pose count, and evaluated/refined hypothesis counts. A small score margin or a high effective pose count may indicate rotational ambiguity, especially for symmetric anatomy. Batch runs also save these diagnostics to `pose_em_diagnostics.json` in the landmark output directory.
+
+The Pose-EM adapter is packaged under PREDICT's private Python resources. It is not a standalone Slicer module and therefore is not presented to Slicer's scripted-module factory for instantiation.
 
 ---
 ## Related / Complementary Extensions
@@ -188,8 +194,3 @@ Enable `View > Error Log` in Slicer for stack traces; include logs in Issues.
 
 ---
 *Last updated:* 2025-08-23
-
-
-
-
-

@@ -3,6 +3,29 @@ import vtk, qt, ctk, slicer
 from slicer.ScriptedLoadableModule import *
 import vtk.util.numpy_support as vtk_np
 
+try:
+    from Resources.Python.PoseEMTemplate import (
+        LEGACY_BACKEND,
+        POSE_EM_BACKEND,
+        PoseEMSettings,
+        coverage_prescale,
+        optimization_backend,
+        pose_em_enabled,
+        run_pose_em_registration,
+        ssm_sample,
+    )
+except ImportError:
+    from .Resources.Python.PoseEMTemplate import (
+        LEGACY_BACKEND,
+        POSE_EM_BACKEND,
+        PoseEMSettings,
+        coverage_prescale,
+        optimization_backend,
+        pose_em_enabled,
+        run_pose_em_registration,
+        ssm_sample,
+    )
+
 # ---------- Small utilities----------
 COLORS = {"red":(1,0.2,0.2), "green":(0.2,1,0.2), "blue":(0.2,0.2,1)}
 
@@ -80,11 +103,30 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
   # ----- Dependencies installer (async-safe) -----
   def _ensure_deps_async(self):
-    import importlib.util, traceback, sys, subprocess
-    required=[("tiny3d","tiny3d"),("biocpd","biocpd")]
-    missing=[m for m,_ in required if importlib.util.find_spec(m) is None]
+    import importlib.util, inspect, traceback, sys, subprocess
+    required=[("tiny3d","tiny3d"),("biocpd","biocpd>=1.3")]
+
+    def hasPoseRealDataAPI():
+        try:
+            biocpd_module = importlib.import_module("biocpd")
+            initializer = getattr(biocpd_module, "pose_marginalized_initialization")
+            parameters = inspect.signature(initializer).parameters
+            return all(name in parameters for name in (
+                "coarse_screen_iterations", "coarse_survivor_count",
+                "coarse_score_mode", "refine_source_count", "n_jobs",
+            ))
+        except Exception:
+            return False
+
+    missing=[]
+    for module_name, _ in required:
+        if importlib.util.find_spec(module_name) is None:
+            missing.append(module_name)
+        elif module_name == "biocpd" and not hasPoseRealDataAPI():
+            missing.append(module_name)
     if missing:
-        msg="PREDICT needs: "+", ".join(missing)+".\nInstall now?"
+        labels=[spec for name,spec in required if name in missing]
+        msg="PREDICT needs or must upgrade: "+", ".join(labels)+".\nInstall now?"
         if not slicer.util.confirmOkCancelDisplay(msg):
             slicer.util.errorDisplay("Dependencies not installed; some actions may fail."); return
     self._deps_ready=False; self._deps_error=None
@@ -92,9 +134,17 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
         try:
             if missing:
                 specs=[spec for m,spec in required if m in missing]
-                subprocess.check_call([sys.executable,"-m","pip","install",*specs])
+                subprocess.check_call([sys.executable,"-m","pip","install","--upgrade",*specs])
+                if "biocpd" in missing:
+                    for module_name in [name for name in sys.modules if name == "biocpd" or name.startswith("biocpd.")]:
+                        sys.modules.pop(module_name, None)
+                    importlib.invalidate_caches()
             for m in ("tiny3d","biocpd","scipy.spatial","scipy.optimize"):
                 importlib.import_module(m)
+            if not hasPoseRealDataAPI():
+                raise RuntimeError(
+                    "The installed biocpd>=1.3 wheel does not provide the required Pose-EM API."
+                )
         except Exception as e:
             self._deps_error=(e, traceback.format_exc())
         else:
@@ -227,6 +277,60 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
   def _on_param_changed(self, *args):
     self.parameterDictionary = self._read_params()
 
+  def _optimization_backend(self):
+    try:
+      index = int(self.optimizationBackendCombo.currentIndex)
+    except TypeError:
+      index = int(self.optimizationBackendCombo.currentIndex())
+    return POSE_EM_BACKEND if index == 1 else LEGACY_BACKEND
+
+  def _optimization_parameters(self):
+    try:
+      scoreModeIndex = int(self.poseCoarseScoreMode.currentIndex)
+    except TypeError:
+      scoreModeIndex = int(self.poseCoarseScoreMode.currentIndex())
+    parameters = dict(self.parameterDictionary)
+    parameters.update({
+      "optimizationBackend": self._optimization_backend(),
+      "opt_pcGridSteps": int(self.pcGridSteps.value),
+      "opt_ransac_per_cand": int(self.ransacItersPerCand.value),
+      "poseRotationCount": int(self.poseRotationCount.value),
+      "poseCoarseSourceCount": int(self.poseCoarseSourceCount.value),
+      "poseCoarseTargetCount": int(self.poseCoarseTargetCount.value),
+      "poseCoarseRank": int(self.poseCoarseRank.value),
+      "poseCoarseIterations": int(self.poseCoarseIterations.value),
+      "poseCoarseScreenIterations": int(self.poseCoarseScreenIterations.value),
+      "poseCoarseSurvivorCount": int(self.poseCoarseSurvivorCount.value),
+      "poseCoarseScoreMode": "trajectory" if scoreModeIndex == 0 else "final",
+      "poseRefineCount": int(self.poseRefineCount.value),
+      "poseRefineSourceCount": int(self.poseRefineSourceCount.value),
+      "poseRefineTargetCount": int(self.poseRefineTargetCount.value),
+      "poseRefineIterations": int(self.poseRefineIterations.value),
+      "poseLambdaReg": float(self.poseLambdaReg.value),
+      "poseOutlierWeight": float(self.poseOutlierWeight.value),
+      "poseIdentityPrior": float(self.poseIdentityPrior.value),
+      "poseSeed": int(self.poseSeed.value),
+      "poseNJobs": int(self.poseNJobs.value),
+    })
+    return parameters
+
+  def _onOptimizationBackendChanged(self, *args):
+    pose = self._optimization_backend() == POSE_EM_BACKEND
+    self.legacyOptimizationBox.visible = not pose
+    self.poseOptimizationBox.visible = pose
+    self.batchBackendLabel.setText(
+      "Template optimization backend: " +
+      ("Pose-marginalized EM (experimental)" if pose else "FPFH + RANSAC (current)")
+    )
+    if pose:
+      self.optimizeButton.setText("Run Experimental Pose-EM Optimization")
+      self.optimizeButton.setToolTip(
+        "Use pose-marginalized registration to select an SSM template shape; standard rigid alignment still runs afterward."
+      )
+    else:
+      self.optimizeButton.setText("Run Template Optimization")
+      self.optimizeButton.setToolTip("Run the current FPFH + RANSAC template optimizer.")
+
   # ----- UI setup -----
   def setup(self):
     ScriptedLoadableModuleWidget.setup(self)
@@ -306,7 +410,10 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.smoothExportedMeshesBatchChk.enabled=False
     multiL.addRow(self.smoothExportedMeshesBatchChk)
     self.ssmTableMultiSelector = self._make_selector(["vtkMRMLTableNode"], attr_key="ssm_eigenvalues", attr_val=None, tooltip="Select the SSM table.", none=False); multiL.addRow("SSM Data Table:", self.ssmTableMultiSelector)
-    self.skipOptBatchChk = qt.QCheckBox("Skip template optimization"); self.skipOptBatchChk.setToolTip("Don’t run SSM grid+RANSAC per target before rigid/CPD.");multiL.addRow(self.skipOptBatchChk)
+    self.skipOptBatchChk = qt.QCheckBox("Skip template optimization"); self.skipOptBatchChk.setToolTip("Skip the selected target-specific template initialization backend.");multiL.addRow(self.skipOptBatchChk)
+    self.batchBackendLabel = qt.QLabel("")
+    self.batchBackendLabel.setWordWrap(True)
+    multiL.addRow(self.batchBackendLabel)
     self.applyLandmarkMultiButton=qt.QPushButton("Run Batch Auto-Landmarking"); self.applyLandmarkMultiButton.enabled=False; multiL.addRow(self.applyLandmarkMultiButton)
     self.batchProgress=qt.QProgressBar(); self.batchProgress.minimum=0; self.batchProgress.maximum=100; self.batchProgress.value=0; multiL.addRow("Progress:", self.batchProgress)
     self.batchCancelButton=qt.QPushButton("Cancel Batch Run"); self.batchCancelButton.enabled=False; multiL.addRow(self.batchCancelButton)
@@ -323,8 +430,38 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.d2sourceSparseFiducialSelector = self._make_selector(["vtkMRMLMarkupsFiducialNode"]); optL.addRow("Template Landmarks:", self.d2sourceSparseFiducialSelector)
     self.d2targetModelSelector          = self._make_selector(["vtkMRMLModelNode"]); optL.addRow("Target model:", self.d2targetModelSelector)
     self.d2ssmTableSelector             = self._make_selector(["vtkMRMLTableNode"], attr_key="ssm_eigenvalues", attr_val=None); optL.addRow("SSM Data Table:", self.d2ssmTableSelector)
-    self.pcGridSteps=qt.QSpinBox(); self.pcGridSteps.minimum=2; self.pcGridSteps.maximum=35; self.pcGridSteps.value=4; self.pcGridSteps.setToolTip("Grid steps per PC"); optL.addRow("Grid steps / PC:", self.pcGridSteps)
-    self.ransacItersPerCand=qt.QSpinBox(); self.ransacItersPerCand.minimum=10000; self.ransacItersPerCand.maximum=2000000; self.ransacItersPerCand.singleStep=10000; self.ransacItersPerCand.value=300000; optL.addRow("RANSAC iters (per candidate):", self.ransacItersPerCand)
+    self.optimizationBackendCombo = qt.QComboBox()
+    self.optimizationBackendCombo.addItem("FPFH + RANSAC (current)")
+    self.optimizationBackendCombo.addItem("Pose-marginalized EM (experimental)")
+    self.optimizationBackendCombo.setToolTip("Select the target-specific template initialization method. The current method remains the default.")
+    optL.addRow("Optimization backend:", self.optimizationBackendCombo)
+
+    self.legacyOptimizationBox=ctk.ctkCollapsibleButton(); self.legacyOptimizationBox.text="FPFH + RANSAC settings"; self.legacyOptimizationBox.collapsed=False
+    legacyOptL=qt.QFormLayout(self.legacyOptimizationBox); optL.addRow(self.legacyOptimizationBox)
+    self.pcGridSteps=qt.QSpinBox(); self.pcGridSteps.minimum=2; self.pcGridSteps.maximum=35; self.pcGridSteps.value=4; self.pcGridSteps.setToolTip("Number of leading SSM modes searched by the current optimizer."); legacyOptL.addRow("SSM modes searched:", self.pcGridSteps)
+    self.ransacItersPerCand=qt.QSpinBox(); self.ransacItersPerCand.minimum=10000; self.ransacItersPerCand.maximum=2000000; self.ransacItersPerCand.singleStep=10000; self.ransacItersPerCand.value=300000; legacyOptL.addRow("RANSAC iters (per candidate):", self.ransacItersPerCand)
+
+    self.poseOptimizationBox=ctk.ctkCollapsibleButton(); self.poseOptimizationBox.text="Experimental pose-EM settings"; self.poseOptimizationBox.collapsed=False
+    poseOptL=qt.QFormLayout(self.poseOptimizationBox); optL.addRow(self.poseOptimizationBox)
+    poseHelp=qt.QLabel("The defaults below match biocpd's real-data registration configuration: trajectory scoring, all coarse poses retained, and full-source refinement. Only the selected SSM shape is applied to the template; standard scaling, rigid alignment, and deformable registration still run afterward.")
+    poseHelp.setWordWrap(True); poseOptL.addRow(poseHelp)
+    self.poseRotationCount=qt.QSpinBox(); self.poseRotationCount.minimum=12; self.poseRotationCount.maximum=2048; self.poseRotationCount.value=193; self.poseRotationCount.setToolTip("Exact total hypothesis budget, including the identity and global/local rotation samples."); poseOptL.addRow("Total pose hypotheses:", self.poseRotationCount)
+    self.poseCoarseSourceCount=qt.QSpinBox(); self.poseCoarseSourceCount.minimum=20; self.poseCoarseSourceCount.maximum=10000; self.poseCoarseSourceCount.value=400; poseOptL.addRow("Coarse source points:", self.poseCoarseSourceCount)
+    self.poseCoarseTargetCount=qt.QSpinBox(); self.poseCoarseTargetCount.minimum=20; self.poseCoarseTargetCount.maximum=10000; self.poseCoarseTargetCount.value=400; poseOptL.addRow("Coarse target points:", self.poseCoarseTargetCount)
+    self.poseCoarseRank=qt.QSpinBox(); self.poseCoarseRank.minimum=1; self.poseCoarseRank.maximum=100; self.poseCoarseRank.value=12; poseOptL.addRow("Coarse SSM rank:", self.poseCoarseRank)
+    self.poseCoarseIterations=qt.QSpinBox(); self.poseCoarseIterations.minimum=1; self.poseCoarseIterations.maximum=100; self.poseCoarseIterations.value=8; poseOptL.addRow("Coarse EM iterations:", self.poseCoarseIterations)
+    self.poseCoarseScreenIterations=qt.QSpinBox(); self.poseCoarseScreenIterations.minimum=1; self.poseCoarseScreenIterations.maximum=100; self.poseCoarseScreenIterations.value=8; self.poseCoarseScreenIterations.setToolTip("Iterations completed before optional screening; equal to coarse iterations by default, so every pose completes the coarse stage."); poseOptL.addRow("Screen after iteration:", self.poseCoarseScreenIterations)
+    self.poseCoarseSurvivorCount=qt.QSpinBox(); self.poseCoarseSurvivorCount.minimum=1; self.poseCoarseSurvivorCount.maximum=2048; self.poseCoarseSurvivorCount.value=193; self.poseCoarseSurvivorCount.setToolTip("Number of hypotheses retained after screening. The default retains the entire 193-pose budget."); poseOptL.addRow("Coarse survivors:", self.poseCoarseSurvivorCount)
+    self.poseCoarseScoreMode=qt.QComboBox(); self.poseCoarseScoreMode.addItem("Trajectory (real-data default)"); self.poseCoarseScoreMode.addItem("Final iteration"); self.poseCoarseScoreMode.setToolTip("Rank coarse poses by their EM objective trajectory or only their final objective."); poseOptL.addRow("Coarse scoring:", self.poseCoarseScoreMode)
+    self.poseRefineCount=qt.QSpinBox(); self.poseRefineCount.minimum=1; self.poseRefineCount.maximum=64; self.poseRefineCount.value=12; poseOptL.addRow("Pose finalists:", self.poseRefineCount)
+    self.poseRefineSourceCount=qt.QSpinBox(); self.poseRefineSourceCount.minimum=0; self.poseRefineSourceCount.maximum=50000; self.poseRefineSourceCount.value=0; self.poseRefineSourceCount.setSpecialValueText("Full source"); self.poseRefineSourceCount.setToolTip("Use 0 for all source points, matching the real-data default."); poseOptL.addRow("Refinement source points:", self.poseRefineSourceCount)
+    self.poseRefineTargetCount=qt.QSpinBox(); self.poseRefineTargetCount.minimum=50; self.poseRefineTargetCount.maximum=50000; self.poseRefineTargetCount.value=1600; poseOptL.addRow("Refinement target points:", self.poseRefineTargetCount)
+    self.poseRefineIterations=qt.QSpinBox(); self.poseRefineIterations.minimum=1; self.poseRefineIterations.maximum=250; self.poseRefineIterations.value=30; poseOptL.addRow("Refinement EM iterations:", self.poseRefineIterations)
+    self.poseLambdaReg=qt.QDoubleSpinBox(); self.poseLambdaReg.minimum=0.0; self.poseLambdaReg.maximum=5.0; self.poseLambdaReg.singleStep=0.01; self.poseLambdaReg.decimals=3; self.poseLambdaReg.value=0.10; self.poseLambdaReg.setToolTip("Pose-initializer SSM regularization; independent of downstream PCA-CPD settings."); poseOptL.addRow("Pose SSM weight:", self.poseLambdaReg)
+    self.poseOutlierWeight=qt.QDoubleSpinBox(); self.poseOutlierWeight.minimum=0.0; self.poseOutlierWeight.maximum=0.99; self.poseOutlierWeight.singleStep=0.01; self.poseOutlierWeight.decimals=2; self.poseOutlierWeight.value=0.05; self.poseOutlierWeight.setToolTip("Pose-initializer outlier weight; independent of downstream PCA-CPD settings."); poseOptL.addRow("Pose outlier weight:", self.poseOutlierWeight)
+    self.poseIdentityPrior=qt.QDoubleSpinBox(); self.poseIdentityPrior.minimum=0.01; self.poseIdentityPrior.maximum=0.99; self.poseIdentityPrior.singleStep=0.05; self.poseIdentityPrior.decimals=2; self.poseIdentityPrior.value=0.20; poseOptL.addRow("Identity-pose prior:", self.poseIdentityPrior)
+    self.poseSeed=qt.QSpinBox(); self.poseSeed.minimum=0; self.poseSeed.maximum=2147483647; self.poseSeed.value=0; poseOptL.addRow("Deterministic seed:", self.poseSeed)
+    self.poseNJobs=qt.QSpinBox(); self.poseNJobs.minimum=1; self.poseNJobs.maximum=128; self.poseNJobs.value=4; self.poseNJobs.setToolTip("Parallel pose hypotheses. PREDICT uses sequential BLAS locally when supported; unsupported native backends safely fall back to one worker."); poseOptL.addRow("Pose workers:", self.poseNJobs)
     self.optimizeButton=qt.QPushButton("Run Template Optimization"); optL.addRow(self.optimizeButton)
 
     # --- Optimization Tab (append this) ---
@@ -379,10 +516,11 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.d2sourceFiducialSelector.currentNodeChanged.connect(self._enable_optimize)
     self.d2targetModelSelector.currentNodeChanged.connect(self._enable_optimize)
     self.d2ssmTableSelector.currentNodeChanged.connect(self._enable_optimize)
+    self.optimizationBackendCombo.currentIndexChanged.connect(self._onOptimizationBackendChanged)
 
     self.optimizeButton.clicked.connect(self.onOptimize)
 
-    self.onSelect(); self.onSelectMultiProcess(); self._enable_optimize(); self.parameterDictionary=self._read_params()
+    self.onSelect(); self.onSelectMultiProcess(); self._enable_optimize(); self.parameterDictionary=self._read_params(); self._onOptimizationBackendChanged()
     self.layout.addStretch(1)
 
   # ----- Small helpers -----
@@ -520,7 +658,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.tgtTemp = self.cloneNode(tgtOrig, customName="Target")
     self.corresTemp  = self.cloneNode(corresOrig,  customName="Source Correspondences")
     self.lmTemp  = self.cloneNode(lmOrig,  customName="Landmarks")
-    if not  self.parameterDictionary.get("skipScaling", False):
+    if not self.parameterDictionary.get("skipScaling", False):
         cov=float(self.parameterDictionary.get("targetCoverage",1.0))
         cov=float(np.clip(cov, 1e-3, 1.0))
         size_src=bounds_diag(self.srcTemp); size_tgt=bounds_diag(self.tgtTemp)
@@ -697,9 +835,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     def cancel_cb(): return self._cancelBatch
     qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
     try:
-      batchParameters = dict(self.parameterDictionary)
-      batchParameters["opt_pcGridSteps"] = int(self.pcGridSteps.value)
-      batchParameters["opt_ransac_per_cand"] = int(self.ransacItersPerCand.value)
+      batchParameters = self._optimization_parameters()
       saveWarpedMeshes = bool(self.saveWarpedMeshesBatchChk.checked)
       meshOutputDir = self.meshOutputSelector.currentPath if saveWarpedMeshes else ""
       smoothExportedMesh = bool(self.smoothExportedMeshesBatchChk.checked)
@@ -744,23 +880,32 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
       self.clearCloneFolder()
       self.ensureCloneFolder(label=label)
 
-      # clones (we will not harden any rigid onto these)
-      tplModel = self.cloneNode(tplModelOrig, "GridRANSAC_TemplateModel")
-      tplCorr  = self.cloneNode(tplCorrOrig,  "GridRANSAC_TemplateCorrespondences")
-      tplLand  = self.cloneNode(tplLandOrig,  "GridRANSAC_TemplateLandmarks") if tplLandOrig else None
+      parameters = self._optimization_parameters()
+      backend = optimization_backend(parameters)
+      prefix = "PoseEM" if backend == POSE_EM_BACKEND else "GridRANSAC"
+      tplModel = self.cloneNode(tplModelOrig, f"{prefix}_TemplateModel")
+      tplCorr  = self.cloneNode(tplCorrOrig,  f"{prefix}_TemplateCorrespondences")
+      tplLand  = self.cloneNode(tplLandOrig,  f"{prefix}_TemplateLandmarks") if tplLandOrig else None
 
       qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
       try:
-          k = int(self.pcGridSteps.value)
-          b, _ = logic.initialize_template(
-              tableNode, tplModel, tplCorr, tplLand, targetNode,
-              parameters=self.parameterDictionary,
-              k=k, span=3.0, optimizer="powell",
-              max_evals=240,
-              eval_ransac_iters=int(self.ransacItersPerCand.value * 0.2),
-              final_ransac_iters=int(self.ransacItersPerCand.value),
-              seed=0
-          )
+          if backend == POSE_EM_BACKEND:
+              result = logic.initialize_template_pose_em(
+                  tableNode, tplModel, tplCorr, tplLand, targetNode,
+                  parameters=parameters,
+              )
+              b = result.coefficients
+          else:
+              k = int(self.pcGridSteps.value)
+              b, _ = logic.initialize_template(
+                  tableNode, tplModel, tplCorr, tplLand, targetNode,
+                  parameters=parameters,
+                  k=k, span=3.0, optimizer="powell",
+                  max_evals=240,
+                  eval_ransac_iters=int(self.ransacItersPerCand.value * 0.2),
+                  final_ransac_iters=int(self.ransacItersPerCand.value),
+                  seed=0
+              )
       except Exception as e:
           slicer.util.errorDisplay(f"Template optimization failed:\n{e}")
           return
@@ -778,7 +923,6 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
       for n in [tplModel, tplCorr] + ([tplLand] if tplLand else []):
           sh.SetItemParent(sh.GetItemByDataNode(n), resRoot)
 
-      # Keep template geometry in place: do NOT SetAndObserveTransformNodeID(..), do NOT harden
       # Report what happened
       info = getattr(logic, "last_opt_info", {}) or {}
       dec  = info.get("decision", "unknown")
@@ -786,7 +930,21 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
       rmse = info.get("rmse", None)
       nb   = info.get("norm_b", None)
 
-      if dec == "baseline_good":
+      if dec == "pose_em_template_chosen":
+          self._log_opt(
+              "[pose-em] Selected template shape "
+              f"(||b||={nb:.3f}, scale={info['scale']:.4g}, size ratio={info['size_ratio']:.3f}, "
+              f"score={info['score']:.3f}, margin={info['score_margin']:.3f}, "
+              f"effective poses={info['effective_hypotheses']:.2f}, "
+              f"evaluated/refined={info['hypotheses_evaluated']}/{info['hypotheses_refined']}, "
+              f"workers={info['pose_workers_effective']}, "
+              f"BLAS limited={info['blas_threads_limited']})."
+          )
+          if info["effective_hypotheses"] >= 2.0:
+              self._log_opt(
+                "[pose-em] Ambiguity warning: multiple pose hypotheses retain substantial support; inspect orientation before batch use."
+              )
+      elif dec == "baseline_good":
           self._log_opt(f"[opt] Baseline template was already good (fit={fit:.3f}, rmse_n={rmse:.3f}).")
       elif dec == "candidate_chosen":
           self._log_opt(f"[opt] New template chosen from SSM (||b||={nb:.3f}, fit={fit:.3f}, rmse_n={rmse:.3f}).")
@@ -795,7 +953,9 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
       else:
           self._log_opt("[opt] Optimization finished (details unavailable).")
 
-      # Hand the optimized/kept template to the Single Alignment tab for the rest of the pipeline
+      # Hand the optimized, template-frame shape to Single Run. The regular
+      # scaling, rigid, and deformable stages remain unchanged for both
+      # optimization backends.
       self.sourceModelSelector.setCurrentNode(tplModel)
       self.sourceFiducialSelector.setCurrentNode(tplCorr)
       if tplLand: self.sourceSparseFiducialSelector.setCurrentNode(tplLand)
@@ -811,6 +971,8 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
   def runLandmarkBatch(self, sourceModelNode, sourceCorrNode, sourceLMNode, targetModelDir, outputDir, skipScaling, projectionFactor, parameters, tableNode, saveWarpedMeshes=False, meshOutputDir="", smoothExportedMesh=False, progress_callback=None, status_callback=None, cancel_callback=None):
     import tiny3d as t3d
     t3d.utility.random.seed(int(42))
+    parameters = dict(parameters)
+    parameters["skipScaling"] = bool(skipScaling)
     skipOpt = bool(parameters.get("skipOptimization", False))
     use_bih = bool(parameters.get("useBiharmonic", False))
     lam_bih = float(parameters.get("bih_lam", 1e4))
@@ -831,7 +993,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
         raise ValueError("Batch mesh export requires a warped mesh output directory.")
       os.makedirs(meshOutputDir, exist_ok=True)
     targets=[f for f in os.listdir(targetModelDir) if f.lower().endswith((".ply",".vtp",".vtk",".stl",".obj"))]
-    total=len(targets); done=0
+    total=len(targets); done=0; pose_diagnostics=[]
     if total==0:
       if status_callback: status_callback("No target meshes found in the selected folder.")
       if progress_callback: progress_callback(0,1,"No work"); return
@@ -860,7 +1022,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       if progress_callback: progress_callback(0, total, "Starting…")
       for i,fname in enumerate(targets):
         if cancel_callback and cancel_callback(): logging.info("Batch cancel requested."); break
-        tgt_node = pred_node = None
+        tgt_node = pred_node = None; pose_entry = None
         try:
           tgt_path=os.path.join(targetModelDir,fname)
           if status_callback: status_callback(f"[{i+1}/{total}] Load target")
@@ -874,15 +1036,57 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           if need_template_nodes:
             with slicer.util.NodeModify(tpl_corr): slicer.util.updateMarkupsControlPointsFromArray(tpl_corr, corr_np)
             with slicer.util.NodeModify(tpl_lm):   slicer.util.updateMarkupsControlPointsFromArray(tpl_lm,   lm_np)
+          pose_em = pose_em_enabled(parameters, skip_optimization=skipOpt)
           if not skipOpt:
-            if status_callback: status_callback(f"[{i+1}/{total}] Optimize (SSM+RANSAC)…")
-            k = int(parameters.get("opt_pcGridSteps", 4))
-            rper = int(parameters.get("opt_ransac_per_cand", 300000))
-            _b,_T=self.initialize_template(tableNode, tpl_model, tpl_corr, tpl_lm, tgt_node, parameters=parameters, k=k, span=3.0, optimizer="powell", max_evals=240, eval_ransac_iters=int(0.2 * rper), final_ransac_iters=rper, seed=0, ssmData=ssmData)
-            corr_np = slicer.util.arrayFromMarkupsControlPoints(tpl_corr).astype(np.float32, copy=True)
-            lm_np   = slicer.util.arrayFromMarkupsControlPoints(tpl_lm).astype(np.float32, copy=True)
+            if pose_em:
+              if cancel_callback and cancel_callback(): raise KeyboardInterrupt("Cancel requested")
+              if status_callback: status_callback(f"[{i+1}/{total}] Pose EM template-shape optimization…")
+              pose_result = self.initialize_template_pose_em(
+                tableNode, tpl_model, tpl_corr, tpl_lm, tgt_node,
+                parameters=parameters,
+                ssmData=ssmData,
+              )
+              corr_np = slicer.util.arrayFromMarkupsControlPoints(tpl_corr).astype(np.float32, copy=True)
+              lm_np   = slicer.util.arrayFromMarkupsControlPoints(tpl_lm).astype(np.float32, copy=True)
+              pose_info = self.last_opt_info or {}
+              pose_entry = {
+                "target": fname,
+                "score": float(pose_result.score),
+                "score_margin": (
+                  float(pose_result.score_margin)
+                  if np.isfinite(pose_result.score_margin) else None
+                ),
+                "posterior_entropy": float(pose_result.posterior_entropy),
+                "effective_hypotheses": float(pose_result.effective_hypotheses),
+                "hypotheses_evaluated": int(pose_result.hypotheses_evaluated),
+                "hypotheses_refined": int(pose_result.hypotheses_refined),
+                "coefficient_norm": float(np.linalg.norm(pose_result.coefficients)),
+                "registration_scale": float(pose_result.scale),
+                "registration_size_ratio": float(pose_info.get("size_ratio", np.nan)),
+                "pose_workers_requested": int(pose_info.get("pose_workers_requested", 1)),
+                "pose_workers_effective": int(pose_info.get("pose_workers_effective", 1)),
+                "blas_threads_limited": bool(pose_info.get("blas_threads_limited", False)),
+                "dense_completion_skipped": True,
+                "downstream_rigid": True,
+              }
+              if status_callback:
+                status_callback(
+                  f"[{i+1}/{total}] Pose EM selected template shape; continuing with standard rigid alignment "
+                  f"(margin={pose_result.score_margin:.3g}, effective poses={pose_result.effective_hypotheses:.2f})"
+                )
+            else:
+              if status_callback: status_callback(f"[{i+1}/{total}] Optimize (SSM+RANSAC)…")
+              k = int(parameters.get("opt_pcGridSteps", 4))
+              rper = int(parameters.get("opt_ransac_per_cand", 300000))
+              _b,_T=self.initialize_template(tableNode, tpl_model, tpl_corr, tpl_lm, tgt_node, parameters=parameters, k=k, span=3.0, optimizer="powell", max_evals=240, eval_ransac_iters=int(0.2 * rper), final_ransac_iters=rper, seed=0, ssmData=ssmData)
+              corr_np = slicer.util.arrayFromMarkupsControlPoints(tpl_corr).astype(np.float32, copy=True)
+              lm_np   = slicer.util.arrayFromMarkupsControlPoints(tpl_lm).astype(np.float32, copy=True)
           else:
             if status_callback: status_callback(f"[{i+1}/{total}] Skip optimization")
+
+          # Both template optimizers return a shape in the template/SSM frame.
+          # Preserve the established downstream contract: scale, rigidly align,
+          # and run PCA-CPD regardless of which optimizer selected the shape.
           b_src=np.array(tpl_model.GetPolyData().GetBounds()).reshape(3,2); b_tgt=np.array(tgt_node.GetPolyData().GetBounds()).reshape(3,2)
           size_src=np.linalg.norm(b_src[:,1]-b_src[:,0]); size_tgt=np.linalg.norm(b_tgt[:,1]-b_tgt[:,0])
           cov=float(parameters.get("targetCoverage",1.0))
@@ -961,6 +1165,9 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
             slicer.util.updateMarkupsControlPointsFromArray(save_scratch, pred_np)
           self.propagateLandmarkTypes(sourceLMNode, save_scratch)
           slicer.util.saveNode(save_scratch, out_path)
+          if pose_entry is not None:
+            pose_entry["landmarks"] = os.path.basename(out_path)
+            pose_diagnostics.append(pose_entry)
         except KeyboardInterrupt:
           logging.info(f"[batch] Cancelled during {fname}"); raise
         except Exception as e:
@@ -981,6 +1188,13 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       logging.exception("Batch crashed.")
       if status_callback: status_callback(f"Batch error: {e}")
     finally:
+      if pose_diagnostics:
+        diagnostics_path = os.path.join(outputDir, "pose_em_diagnostics.json")
+        try:
+          with open(diagnostics_path, "w", encoding="utf-8") as stream:
+            json.dump(pose_diagnostics, stream, indent=2, sort_keys=True)
+        except Exception:
+          logging.exception(f"Could not save pose-EM diagnostics: {diagnostics_path}")
       for n in (tpl_model, tpl_corr, tpl_lm, save_scratch):
         if n:
           try: scene.RemoveNode(n)
@@ -1012,6 +1226,139 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     cached = {"flat": A, "mean": mean, "U": U, "eig": eig}
     self._ssm_cache[key] = cached
     return cached
+
+  def _truncated_ssm(self, tableNode, parameters, ssmData=None):
+    ssmData = self._get_ssm_base(tableNode) if ssmData is None else ssmData
+    mean = np.asarray(ssmData["mean"], dtype=float)
+    modes = np.asarray(ssmData["U"], dtype=float)
+    eig = np.asarray(ssmData["eig"], dtype=float)
+    variance_keep = float(parameters.get("variance_keep", 0.95))
+    if eig.size == 0:
+      raise ValueError("The SSM contains no retained modes.")
+    if eig.sum() <= 0 or variance_keep >= 1.0:
+      k = eig.size
+    else:
+      k = int(np.searchsorted(np.cumsum(eig), variance_keep * eig.sum()) + 1)
+    k = max(1, min(k, eig.size))
+    return mean, modes[:, :, :k], eig[:k]
+
+  def _pose_em_target_points(self, targetModelNode, parameters):
+    import tiny3d as t3d
+    target = np.asarray(slicer.util.arrayFromModelPoints(targetModelNode), dtype=float)
+    if target.ndim != 2 or target.shape[1] != 3 or len(target) == 0:
+      raise ValueError("Pose EM requires a non-empty target model.")
+    diag = float(np.linalg.norm(np.ptp(target, axis=0)))
+    voxel = diag / (55.0 * max(float(parameters.get("pointDensity", 1.3)), 0.1))
+    if voxel <= np.finfo(float).eps:
+      return target
+    cloud = t3d.geometry.PointCloud(); cloud.points = t3d.utility.Vector3dVector(target)
+    down = cloud.voxel_down_sample(voxel)
+    points = np.asarray(down.points, dtype=float)
+    return points if len(points) else target
+
+  def runPoseEMDeformable(self, tableNode, targetSLM, parameters, ssmData=None):
+    if tableNode is None:
+      raise ValueError("Pose EM registration requires an SSM table.")
+    mean, modes, eig = self._truncated_ssm(tableNode, parameters, ssmData=ssmData)
+    target = np.asarray(targetSLM, dtype=float)
+    coverage = float(np.clip(parameters.get("targetCoverage", 1.0), 1e-3, 1.0))
+    skip_scaling = bool(parameters.get("skipScaling", False))
+    complete = np.isclose(coverage, 1.0)
+    with_scale = bool(complete and not skip_scaling)
+    source_scale = 1.0
+    if not complete and not skip_scaling:
+      source_scale = coverage_prescale(mean, target, coverage)
+
+    settings = PoseEMSettings.from_mapping(parameters)
+    result = run_pose_em_registration(
+      mean,
+      target,
+      modes,
+      eig,
+      settings,
+      with_scale=with_scale,
+      source_scale=source_scale,
+    )
+    points = result.points
+    target_diag = float(np.linalg.norm(np.ptp(target, axis=0)))
+    registered_diag = float(np.linalg.norm(np.ptp(points, axis=0)))
+    size_ratio = registered_diag / max(target_diag, np.finfo(float).eps)
+    if with_scale and size_ratio < 0.1:
+      logging.warning(
+        "[pose-em] Diagnostic similarity pose has a small size ratio "
+        f"({size_ratio:.4g}, scale={result.scale:.4g}); retaining the selected "
+        "SSM coefficients because downstream scaling and rigid alignment remain active."
+      )
+    return np.asarray(points, dtype=float), result
+
+  def initialize_template_pose_em(self, tableNode, srcModelNode, srcCorrNode, srcLmNode, tgtModelNode, parameters, ssmData=None):
+    self.last_opt_info = None
+    oldCorr = np.asarray(slicer.util.arrayFromMarkupsControlPoints(srcCorrNode), dtype=float)
+    mean, modes, _ = self._truncated_ssm(tableNode, parameters, ssmData=ssmData)
+    if oldCorr.shape != mean.shape:
+      raise ValueError(
+        f"Template correspondences have shape {oldCorr.shape}, but the SSM mean has shape {mean.shape}."
+      )
+    target = self._pose_em_target_points(tgtModelNode, parameters)
+    registeredCorr, result = self.runPoseEMDeformable(
+      tableNode,
+      target,
+      parameters,
+      ssmData=ssmData,
+    )
+    # Pose EM uses global pose to evaluate shape hypotheses, but template
+    # optimization returns only the selected SSM shape. Keep it in the SSM's
+    # original frame so the established ATLAS scaling, rigid, and deformable
+    # stages always run afterward.
+    newCorr = ssm_sample(mean, modes, result.coefficients)
+
+    use_bih = bool(parameters.get("useBiharmonic", False))
+    if use_bih:
+      lam = float(parameters.get("bih_lam_init", parameters.get("bih_lam", 1e4)))
+      try:
+        V0, V1, F = self.warp_model_biharmonic(srcModelNode, oldCorr, newCorr, lam=lam)
+        if srcLmNode is not None:
+          self.warp_markups_barycentric(srcLmNode, V0, V1, F)
+      except Exception as exc:
+        logging.warning(f"[pose-em] Biharmonic warp failed; falling back to TPS. Reason: {exc}")
+        self.warp_model_tps(
+          srcModelNode, oldCorr, newCorr,
+          lam=float(parameters.get("tpsLambda", 0.0)),
+          max_corr=int(parameters.get("tpsMaxCorr", 800)),
+          seed=int(parameters.get("poseSeed", 0)),
+          landmarksNode=srcLmNode,
+        )
+    else:
+      self.warp_model_tps(
+        srcModelNode, oldCorr, newCorr,
+        lam=float(parameters.get("tpsLambda", 0.0)),
+        max_corr=int(parameters.get("tpsMaxCorr", 800)),
+        seed=int(parameters.get("poseSeed", 0)),
+        landmarksNode=srcLmNode,
+      )
+    slicer.util.updateMarkupsControlPointsFromArray(srcCorrNode, newCorr)
+
+    self.last_opt_info = {
+      "backend": POSE_EM_BACKEND,
+      "decision": "pose_em_template_chosen",
+      "norm_b": float(np.linalg.norm(result.coefficients)),
+      "score": float(result.score),
+      "score_margin": float(result.score_margin),
+      "posterior_entropy": float(result.posterior_entropy),
+      "effective_hypotheses": float(result.effective_hypotheses),
+      "hypotheses_evaluated": int(result.hypotheses_evaluated),
+      "hypotheses_refined": int(result.hypotheses_refined),
+      "scale": float(result.scale),
+      "pose_workers_requested": int(result.final_parameters["pose_workers_requested"]),
+      "pose_workers_effective": int(result.final_parameters["pose_workers_effective"]),
+      "blas_threads_limited": bool(result.final_parameters["blas_threads_limited"]),
+      "dense_completion_skipped": True,
+      "size_ratio": float(
+        np.linalg.norm(np.ptp(registeredCorr, axis=0)) /
+        max(np.linalg.norm(np.ptp(target, axis=0)), np.finfo(float).eps)
+      ),
+    }
+    return result
 
   def smoothPolyData(self, polyData, iterations=8, passBand=0.1):
       f = vtk.vtkWindowedSincPolyDataFilter()
@@ -1113,6 +1460,27 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       )
       warped_landmarks, _ = final.register()
       return warped_landmarks/s20
+
+  def runFineDeformable(self, sourceLM, targetSLM, parameters):
+      from biocpd.deformable_registration import DeformableRegistration
+      source = np.asarray(sourceLM, dtype=float)
+      target = np.asarray(targetSLM, dtype=float)
+      if bool(parameters.get("skipFineCPD", False)):
+          return source.copy()
+      if source.ndim != 2 or target.ndim != 2 or source.shape[1] != 3 or target.shape[1] != 3:
+          raise ValueError("Fine CPD requires source and target arrays with shape (N, 3).")
+      diag = float(np.linalg.norm(np.ptp(target, axis=0))) if len(target) else 0.0
+      scale = 20.0 / max(diag, 1e-12)
+      final = DeformableRegistration(
+          X=target * scale,
+          Y=source * scale,
+          beta=float(parameters.get("beta", 2.0)),
+          alpha=float(parameters.get("alpha", 2.0)),
+          tolerance=float(parameters.get("tolerance", 1e-6)),
+          max_iterations=int(parameters.get("max_iterations", 120)),
+      )
+      warped, _ = final.register()
+      return warped / scale
   
   def _triangulate_polydata(self, pd):
     tf = vtk.vtkTriangleFilter()

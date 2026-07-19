@@ -1,28 +1,23 @@
-# ATLAS/CMakeLists.txt — Extension root
 cmake_minimum_required(VERSION 3.5)
 
 project(ATLAS)
 
-# ---- Extension meta-data (shown in Slicer Extension Manager) ----
-set(EXTENSION_HOMEPAGE         "https://github.com/agporto/ATLAS")
-set(EXTENSION_CATEGORY         "ATLAS")     # Pick something appropriate
-set(EXTENSION_CONTRIBUTORS     "Arthur Porto")
-set(EXTENSION_DESCRIPTION      "Tools for template alignment, SSM-guided CPD, etc.")
-set(EXTENSION_ICONURL          "")              # Optional
-set(EXTENSION_SCREENSHOTURLS   "")              # Optional
-set(EXTENSION_DEPENDS          "")              # Space-separated Slicer extensions your extension depends on
+# Extension metadata displayed in the Slicer Extensions Manager.
+set(EXTENSION_HOMEPAGE "https://github.com/agporto/ATLAS")
+set(EXTENSION_CATEGORY "Registration")
+set(EXTENSION_CONTRIBUTORS "Arthur Porto (Florida Museum of Natural History, University of Florida)")
+set(EXTENSION_DESCRIPTION "ATLAS provides workflows for constructing 3D anatomical atlases and statistical shape models and for automatically transferring landmarks to new surface models. It combines rigid surface registration, shape-model-guided deformable registration, and optional surface projection.")
+set(EXTENSION_ICONURL "https://raw.githubusercontent.com/agporto/ATLAS/main/PREDICT/Resources/Icons/PREDICT.png")
+set(EXTENSION_SCREENSHOTURLS "https://raw.githubusercontent.com/agporto/ATLAS/main/tutorial/images/20.png")
+set(EXTENSION_DEPENDS "")
 
 find_package(Slicer REQUIRED)
 include(${Slicer_USE_FILE})
 
-# Add your modules
 add_subdirectory(PREDICT)
 add_subdirectory(BUILDER)
 add_subdirectory(DATABASE)
 add_subdirectory(SEGMENTATION)
 
-
-
-# Packaging, testing
 include(${Slicer_EXTENSION_GENERATE_CONFIG})
 include(${Slicer_EXTENSION_CPACK})

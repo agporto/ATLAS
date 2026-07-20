@@ -7,7 +7,7 @@ set(MODULE_PYTHON_SCRIPTS
 
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
-  Resources/Python/LegacyDatabase.py
+  Resources/Python/LibraryImplementation.py
   )
 
 slicerMacroBuildScriptedModule(

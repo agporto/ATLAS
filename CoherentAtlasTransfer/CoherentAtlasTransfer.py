@@ -78,7 +78,13 @@ class CoherentAtlasTransferWidget(_TransferWidgetBase):
                 slicer.util.errorDisplay("Dependencies were not installed; transfer actions may fail.")
                 return
             try:
-                slicer.util.pip_install(specifications)
+                slicer.util.pip_install(" ".join(specifications))
+                for loaded_name in list(sys.modules):
+                    if any(
+                        loaded_name == package_name or loaded_name.startswith(package_name + ".")
+                        for package_name in missing
+                    ):
+                        sys.modules.pop(loaded_name, None)
                 importlib.invalidate_caches()
             except Exception as exc:
                 self._deps_ready = False

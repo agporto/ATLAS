@@ -2,7 +2,7 @@
 
 ## SlicerDenseCorrespondenceAnalysis / DeCAL
 
-Portions of the ATLAS BUILDER module were adapted from the Dense Correspondence Landmarking (DeCAL) workflow in [SlicerDenseCorrespondenceAnalysis](https://github.com/SlicerMorph/SlicerDenseCorrespondenceAnalysis).
+Portions of the CoherentAtlas **Atlas Construction** module were adapted from the Dense Correspondence Landmarking (DeCAL) workflow in [SlicerDenseCorrespondenceAnalysis](https://github.com/SlicerMorph/SlicerDenseCorrespondenceAnalysis).
 
 Copyright (c) 2025, SlicerMorph Project
 

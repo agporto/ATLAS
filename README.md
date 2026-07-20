@@ -1,6 +1,6 @@
 <h1 align="center">MorphoWeave</h1>
 
-<p align="center"><strong>Scaling 3D morphometrics with atlas-based automated landmarking</strong></p>
+<p align="center"><strong>Weaving biological form into a common geometric language</strong></p>
 
 <p align="center">
   A 3D Slicer extension for anatomical atlas construction, statistical shape modeling, deformable registration, and automated landmark transfer.

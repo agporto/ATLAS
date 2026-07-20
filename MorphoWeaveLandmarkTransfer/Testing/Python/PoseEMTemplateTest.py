@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-PREDICT_DIR = Path(__file__).resolve().parents[2]
-if str(PREDICT_DIR) not in sys.path:
-    sys.path.insert(0, str(PREDICT_DIR))
+MODULE_DIR = Path(__file__).resolve().parents[2]
+if str(MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULE_DIR))
 
 from Resources.Python.PoseEMTemplate import (
     LEGACY_BACKEND,
@@ -65,16 +65,16 @@ def _initializer(coefficients, rotation, scale, translation):
 
 class PoseEMTemplateUnitTest(unittest.TestCase):
     def test_helper_is_packaged_as_a_resource_not_a_slicer_module(self):
-        cmake = (PREDICT_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
+        cmake = (MODULE_DIR / "CMakeLists.txt").read_text(encoding="utf-8")
         scripts = cmake.split("set(MODULE_PYTHON_SCRIPTS", 1)[1].split(")", 1)[0]
         resources = cmake.split("set(MODULE_PYTHON_RESOURCES", 1)[1].split(")", 1)[0]
         self.assertNotIn("PoseEMTemplate.py", scripts)
         self.assertIn("Resources/Python/PoseEMTemplate.py", resources)
-        self.assertFalse((PREDICT_DIR / "PoseEMTemplate.py").exists())
+        self.assertFalse((MODULE_DIR / "PoseEMTemplate.py").exists())
 
     def test_slicer_module_wires_backend_selector_to_standalone_and_batch_paths(self):
-        source = (PREDICT_DIR / "PREDICT.py").read_text(encoding="utf-8")
-        compile(source, str(PREDICT_DIR / "PREDICT.py"), "exec")
+        source = (MODULE_DIR / "MorphoWeaveLandmarkTransfer.py").read_text(encoding="utf-8")
+        compile(source, str(MODULE_DIR / "MorphoWeaveLandmarkTransfer.py"), "exec")
         self.assertIn("Pose-marginalized EM (experimental)", source)
         self.assertIn("backend = optimization_backend(parameters)", source)
         self.assertIn("pose_em = pose_em_enabled(parameters, skip_optimization=skipOpt)", source)
@@ -82,13 +82,15 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
         self.assertIn("self.runPoseEMDeformable", source)
         self.assertIn('"pose_em_diagnostics.json"', source)
         self.assertIn('("biocpd","biocpd>=1.3")', source)
+        self.assertIn("slicer.util.pip_install", source)
+        self.assertNotIn("subprocess.check_call", source)
         self.assertNotIn("git+https://", source)
 
     def test_pose_em_never_bypasses_standard_alignment_stages(self):
-        source = (PREDICT_DIR / "PREDICT.py").read_text(encoding="utf-8")
+        source = (MODULE_DIR / "MorphoWeaveLandmarkTransfer.py").read_text(encoding="utf-8")
         self.assertNotIn("poseEMPrealigned", source)
         self.assertNotIn("Pose-EM Identity Handoff", source)
-        self.assertNotIn("PREDICT.pose_em_registered", source)
+        self.assertNotIn("MorphoWeaveLandmarkTransfer.pose_em_registered", source)
 
         single_rigid = source.split("  def onAlignButton(self):", 1)[1].split(
             "  def onDisplayMeshButton(self):", 1
@@ -178,7 +180,7 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
         self.assertEqual(settings.n_jobs, 1)
 
     def test_ui_uses_exact_real_data_defaults(self):
-        source = (PREDICT_DIR / "PREDICT.py").read_text(encoding="utf-8")
+        source = (MODULE_DIR / "MorphoWeaveLandmarkTransfer.py").read_text(encoding="utf-8")
         self.assertIn('poseOptL.addRow("Total pose hypotheses:", self.poseRotationCount)', source)
         self.assertIn("self.poseRotationCount.value=193", source)
         self.assertIn('"poseCoarseScoreMode": "trajectory" if scoreModeIndex == 0 else "final"', source)
@@ -221,7 +223,7 @@ class PoseEMTemplateUnitTest(unittest.TestCase):
         self.assertFalse(result.final_parameters["blas_threads_limited"])
 
     def test_template_selection_skips_redundant_dense_completion(self):
-        helper = (PREDICT_DIR / "Resources/Python/PoseEMTemplate.py").read_text(encoding="utf-8")
+        helper = (MODULE_DIR / "Resources/Python/PoseEMTemplate.py").read_text(encoding="utf-8")
         self.assertNotIn("registration.register()", helper)
 
     def test_ssm_sample_uses_native_coefficients_without_sqrt_eigen_scaling(self):

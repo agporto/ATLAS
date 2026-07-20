@@ -331,7 +331,7 @@ def run_pose_em_registration(
 
     # The initializer has already refined its finalists. Template optimization
     # needs only those coefficients; a second dense AtlasRegistration pass was
-    # redundant and its registered coordinates were discarded by PREDICT.
+    # redundant and its registered coordinates were discarded by MorphoWeaveLandmarkTransfer.
     points_centered = scale * (initial_shape @ rotation.T) + translation
     final_scale = float(source_scale) * scale
     final_translation = (

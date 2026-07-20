@@ -6,15 +6,15 @@ from scipy.sparse import coo_matrix, diags
 from scipy.sparse.linalg import eigsh
 from scipy.cluster.vq import kmeans2
 
-class SEGMENTATION(ScriptedLoadableModule):
+class MorphoWeaveSurfaceSegmentation(ScriptedLoadableModule):
   def __init__(self, parent):
     super().__init__(parent); p=parent
-    p.title="SEGMENTATION"; p.categories=["ATLAS"]; p.dependencies=[]
+    p.title="Surface Segmentation"; p.categories=["MorphoWeave"]; p.dependencies=[]
     p.contributors=["Arthur Porto"]; p.helpText="Dataset-consistent segmentation from meshes + dense correspondences (.mrk.json)."; p.acknowledgementText=""
 
-class SEGMENTATIONWidget(ScriptedLoadableModuleWidget):
+class MorphoWeaveSurfaceSegmentationWidget(ScriptedLoadableModuleWidget):
   def setup(self):
-    super().setup(); self.logic=SEGMENTATIONLogic(); self._buildUI()
+    super().setup(); self.logic=MorphoWeaveSurfaceSegmentationLogic(); self._buildUI()
   def _t(self, le):
     t = getattr(le, "text")
     return t().strip() if callable(t) else str(t).strip()
@@ -26,13 +26,13 @@ class SEGMENTATIONWidget(ScriptedLoadableModuleWidget):
   def _checked(self, cb):
     f = getattr(cb, "isChecked", None)
     return f() if callable(f) else bool(getattr(cb, "checked", False))
-  
+
   def _browse(self, le, dirOnly=True):
     p=qt.QFileDialog.getExistingDirectory(self.parent,"Select folder") if dirOnly else qt.QFileDialog.getOpenFileName(self.parent,"Select file")[0]
     if p: le.setText(p)
 
   def _buildUI(self):
-    root=ctk.ctkCollapsibleButton(); root.text="SEGMENTATION Workflow"; root.collapsed=False; self.layout.addWidget(root); f=qt.QFormLayout(root)
+    root=ctk.ctkCollapsibleButton(); root.text="Surface Segmentation Workflow"; root.collapsed=False; self.layout.addWidget(root); f=qt.QFormLayout(root)
     info = qt.QLabel("Select paired mesh/.mrk.json folders, tune segmentation settings, then run.")
     info.setWordWrap(True)
     f.addRow(info)
@@ -121,7 +121,7 @@ class SEGMENTATIONWidget(ScriptedLoadableModuleWidget):
       slicer.util.errorDisplay("Auto-tune is enabled, but k/alpha grids are empty.")
       return
 
-    with slicer.util.tryWithErrorDisplay("SEGMENTATION failed", waitCursor=True):
+    with slicer.util.tryWithErrorDisplay("Surface Segmentation failed", waitCursor=True):
       res=self.logic.run(
         dMeshes,dMrk,dOut,
         k=int(self._spin(self.kSeg)), knn=int(self._spin(self.knn)),
@@ -129,22 +129,22 @@ class SEGMENTATIONWidget(ScriptedLoadableModuleWidget):
         write_vtp=self._checked(self.saveVTP), previewN=int(self._spin(self.previewN)),
         auto_tune=auto, k_grid=k_grid, alpha_grid=a_grid
       )
-      msg = f"SEGMENTATION: {res['n_pairs']} pairs, k={res['k']}, wrote={res['wrote']}"
+      msg = f"Surface Segmentation: {res['n_pairs']} pairs, k={res['k']}, wrote={res['wrote']}"
       if 'Q' in res: msg += f", Q={res['Q']:.3f}"
       slicer.util.showStatusMessage(msg)
       self.statusLbl.setText(f"Status: COMPLETED - last run completed successfully. Outputs written to: {dOut}")
       logging.info(res)
 
 
-class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
+class MorphoWeaveSurfaceSegmentationLogic(ScriptedLoadableModuleLogic):
   def run(self, meshes_dir, mrk_dir, out_dir,
           k=15, knn=12, smooth_iters=1, alpha=0.7,
           write_vtp=True, previewN=3,
           auto_tune=False, k_grid=None, alpha_grid=None):
-    
+
     self._clear_preview_nodes(); pairs=self._pair_files(meshes_dir,mrk_dir)
     if not pairs: raise RuntimeError("No mesh↔.mrk.json pairs found.")
-    ok,M=self._validate_mrk_counts([m for _,m in pairs]); 
+    ok,M=self._validate_mrk_counts([m for _,m in pairs]);
     if not ok: raise RuntimeError("Dense correspondences count mismatch.")
     loci_mean=self._mean_loci([m for _,m in pairs],M); A_geo=self._knn_graph(loci_mean,knn)
     feats = []; cache = {}
@@ -177,7 +177,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
         used_pairs.append((meshPath, mrkPath))
 
       except Exception as e:
-        logging.warning(f"[SEGMENTATION] Skipping '{os.path.basename(meshPath)}' due to {type(e).__name__}: {e}")
+        logging.warning(f"[MorphoWeaveSurfaceSegmentation] Skipping '{os.path.basename(meshPath)}' due to {type(e).__name__}: {e}")
         skipped.append((meshPath, mrkPath))
         continue
 
@@ -194,7 +194,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
     # ensure consistent feature width (HKS may fail on some and be zero-filled; see step 2)
     Dmax = max(f.shape[1] for f in feats)
     if any(f.shape[1] != Dmax for f in feats):
-      logging.warning("[SEGMENTATION] Feature dimension mismatch; padding to D=%d", Dmax)
+      logging.warning("[MorphoWeaveSurfaceSegmentation] Feature dimension mismatch; padding to D=%d", Dmax)
       feats = [np.pad(f, ((0,0),(0, Dmax - f.shape[1])), mode='constant') for f in feats]
 
     feats = np.stack(feats, 0)  # S × M × D
@@ -204,17 +204,17 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
       if not k_grid: k_grid = [k]
       if not alpha_grid: alpha_grid = [alpha]
       k_best, alpha_best, Q_best, labels, W = self._choose_k_alpha(loci_mean, feats, A_geo, k_grid, alpha_grid)
-      logging.info(f"[SEGMENTATION] Auto-tune chose k={k_best}, α={alpha_best:.3f}, Q={Q_best:.4f}")
+      logging.info(f"[MorphoWeaveSurfaceSegmentation] Auto-tune chose k={k_best}, α={alpha_best:.3f}, Q={Q_best:.4f}")
       k, alpha, Q = k_best, alpha_best, Q_best
     else:
       W = self._loci_kernel_multi(loci_mean, feats, A_geo, alpha)
       labels = self._spectral_cluster(W, k)
       Q = self._modularity(W, labels)
-      logging.info(f"[SEGMENTATION] Q={Q:.4f} (k={k}, α={alpha:.3f})")
+      logging.info(f"[MorphoWeaveSurfaceSegmentation] Q={Q:.4f} (k={k}, α={alpha:.3f})")
 
     # write only used_pairs
     wrote = 0
-    self._ensure_color_table("SEGMENTATION_Colors", int(labels.max()+1))
+    self._ensure_color_table("MorphoWeaveSurfaceSegmentation_Colors", int(labels.max()+1))
     for i, (meshPath, mrkPath) in enumerate(used_pairs):
       V, F, pdW = cache[meshPath]
       P = self._load_mrk_positions_world(mrkPath)
@@ -283,7 +283,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
       node = self._new_node_of_class("vtkMRMLModelNode", before)
     if node is None: raise RuntimeError(f"Model loaded but not found in scene: {path}")
     return node
-  
+
   def _load_markups_node(self, path):
     before = self._ids_of_class("vtkMRMLMarkupsNode")
     node = None
@@ -380,7 +380,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
     newpd.BuildCells(); newpd.BuildLinks()
 
     logging.warning(
-      f"[SEGMENTATION] Repaired mesh '{modelNode.GetName()}': "
+      f"[MorphoWeaveSurfaceSegmentation] Repaired mesh '{modelNode.GetName()}': "
       f"removed {n_bad}/{n_tot} non-finite vertices ({drop_frac:.2%})."
     )
     return newpd
@@ -517,7 +517,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
       n.CreateDefaultDisplayNodes()
       dn = n.GetDisplayNode()
       k = max(int(labV.max()+1), 1)
-      ctn = self._ensure_color_table("SEGMENTATION_Colors", k)
+      ctn = self._ensure_color_table("MorphoWeaveSurfaceSegmentation_Colors", k)
       if hasattr(dn, "SetAndObserveColorNodeID"): dn.SetAndObserveColorNodeID(ctn.GetID())
       try:
           flag = getattr(dn, "ScalarRangeFlagUseColorNode", None)
@@ -534,8 +534,8 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
       if node and node.GetName().endswith("_seg_preview"): slicer.mrmlScene.RemoveNode(node)
 
   def _save_labels_lookup(self,out_dir,labels):
-    np.save(os.path.join(out_dir,"SEGMENTATION_locus_labels.npy"), labels)
-    with open(os.path.join(out_dir,"SEGMENTATION_locus_labels.txt"),"w") as f: f.write("\n".join(map(str,labels.tolist())))
+    np.save(os.path.join(out_dir,"MorphoWeaveSurfaceSegmentation_locus_labels.npy"), labels)
+    with open(os.path.join(out_dir,"MorphoWeaveSurfaceSegmentation_locus_labels.txt"),"w") as f: f.write("\n".join(map(str,labels.tolist())))
 
   def _ensure_color_table(self, name, k):
     ctn = slicer.mrmlScene.GetFirstNodeByName(name)
@@ -577,7 +577,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
     p = v*(1.0-s); q = v*(1.0-s*f); t = v*(1.0-s*(1.0-f))
     return [(v,t,p),(q,v,p),(p,v,t),(p,q,v),(t,p,v),(v,p,q)][i]
 
-  
+
   def _mean_loci(self, mrk_paths, M):
     S = len(mrk_paths)
     Q = np.empty((S, M, 3), float)
@@ -587,7 +587,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
         raise RuntimeError(f"Markups '{os.path.basename(p)}' has {P.shape[0]} points; expected {M}.")
       Q[i] = P
     return Q.mean(axis=0)
-    
+
   def _vtk_curvature(self, pd, ctype="Mean"):
     curv = vtk.vtkCurvatures(); curv.SetInputData(pd)
     if ctype=="Mean": curv.SetCurvatureTypeToMean()
@@ -758,7 +758,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
           X.append(np.median(HKS[m], axis=0))
         H_med = np.asarray(X, float)  # [M, hks_times]
       except Exception as e:
-        logging.warning(f"[SEGMENTATION] HKS failed on '{os.path.basename(getattr(self, '_current_mesh', 'mesh'))}': {e} — filling zeros.")
+        logging.warning(f"[MorphoWeaveSurfaceSegmentation] HKS failed on '{os.path.basename(getattr(self, '_current_mesh', 'mesh'))}': {e} — filling zeros.")
         H_med = np.zeros((len(vidx), hks_times), dtype=float)
       extras.append(H_med)
 
@@ -770,7 +770,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
     sd = Fms.std(0, keepdims=True) + 1e-8
     return (Fms - mu) / sd
 
-  
+
   def _ring_mask(self, A, seed, hops=1):
     mask = np.zeros(A.shape[0], dtype=bool)
     frontier = np.zeros_like(mask); frontier[seed] = True; mask[seed] = True
@@ -780,7 +780,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
       mask |= nxt
       frontier = nxt
     return mask
-  
+
   def _cotangent_laplacian(self, V, F):
     # build cotangent L and barycentric M
     nv = V.shape[0]
@@ -829,7 +829,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
     # per-mesh zscore across vertices (like other channels)
     mu = H.mean(0, keepdims=True); sd = H.std(0, keepdims=True) + 1e-8
     return (H - mu) / sd
-  
+
   def _modularity(self, W, labels):
     """
     Newman-Girvan modularity Q for a weighted, undirected graph W and integer labels.
@@ -860,7 +860,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
         if (best is None) or (Q > best[2]):
           best = (k, a, Q, labels, W)
     return best
-  
+
   def _clean_feats(self, feats_stack):
     # feats_stack: S x M x D
     S, M, D = feats_stack.shape
@@ -869,7 +869,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
     if bad.any():
       col_med = np.nanmedian(np.where(np.isfinite(X), X, np.nan), axis=0)
       X[bad] = np.take(col_med, np.where(bad)[1])
-      logging.info(f"[SEGMENTATION] Cleaned NaN/Inf in features.")
+      logging.info(f"[MorphoWeaveSurfaceSegmentation] Cleaned NaN/Inf in features.")
     return X.reshape(S, M, D)
 
   def _whiten_feats(self, feats_stack, eps=1e-6):
@@ -887,7 +887,7 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
     A = (evecs * invsqrt) @ evecs.T        # D x D
     Y = (X0 @ A.T).reshape(S, M, D)
     return Y, {"whiten_mu": mu, "whiten_A": A}
-  
+
   def _assert_finite(self, what, arr, path):
     if not np.isfinite(arr).all():
       bad = np.argwhere(~np.isfinite(arr))[:5].tolist()
@@ -895,4 +895,13 @@ class SEGMENTATIONLogic(ScriptedLoadableModuleLogic):
         f"Non-finite values in {what} of '{os.path.basename(path)}' "
         f"(first bad indices: {bad})."
       )
+
+
+class MorphoWeaveSurfaceSegmentationTest(ScriptedLoadableModuleTest):
+  def setUp(self):
+    slicer.mrmlScene.Clear(0)
+
+  def runTest(self):
+    self.setUp()
+    self.assertIsNotNone(MorphoWeaveSurfaceSegmentationLogic())
 

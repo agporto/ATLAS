@@ -14,24 +14,24 @@ from scipy.sparse.linalg import splu
 # Module + Widget
 # =========================
 
-class BUILDER(ScriptedLoadableModule):
+class MorphoWeaveAtlasBuilder(ScriptedLoadableModule):
   def __init__(self, parent):
     ScriptedLoadableModule.__init__(self, parent)
-    self.parent.title = "BUILDER"
-    self.parent.categories = ["ATLAS"]
+    self.parent.title = "Atlas Builder"
+    self.parent.categories = ["MorphoWeave"]
     self.parent.dependencies = []
     self.parent.contributors = ["Arthur Porto"]
     self.parent.helpText = "Align meshes/landmarks to an atlas and export dense correspondences as .mrk.json"
     self.parent.helpText += self.getDefaultModuleDocumentationLink()
     self.parent.acknowledgementText = ""
 
-class BUILDERWidget(ScriptedLoadableModuleWidget):
+class MorphoWeaveAtlasBuilderWidget(ScriptedLoadableModuleWidget):
   def setup(self):
     ScriptedLoadableModuleWidget.setup(self)
 
-    self.logic = BUILDERLogic()
+    self.logic = MorphoWeaveAtlasBuilderLogic()
 
-    root = ctk.ctkCollapsibleButton(); root.text = "BUILDER Workflow"; root.collapsed = False
+    root = ctk.ctkCollapsibleButton(); root.text = "Atlas Builder Workflow"; root.collapsed = False
     lay = qt.QFormLayout(root); self.layout.addWidget(root)
     flowHelp = qt.QLabel("Step order: choose atlas source -> select input/output folders -> tune advanced options -> run.")
     flowHelp.setWordWrap(True)
@@ -100,7 +100,7 @@ class BUILDERWidget(ScriptedLoadableModuleWidget):
 
     runBox = ctk.ctkCollapsibleButton(); runBox.text = "Run + Status"; runBox.collapsed = False
     runLay = qt.QFormLayout(runBox); lay.addRow(runBox)
-    self.runBtn = qt.QPushButton("Run BUILDER Pipeline"); self.runBtn.enabled = False
+    self.runBtn = qt.QPushButton("Run Atlas Builder Pipeline"); self.runBtn.enabled = False
     runLay.addRow(self.runBtn)
 
     # Log
@@ -284,7 +284,7 @@ class BUILDERWidget(ScriptedLoadableModuleWidget):
 # Logic
 # =========================
 
-class BUILDERLogic(ScriptedLoadableModuleLogic):
+class MorphoWeaveAtlasBuilderLogic(ScriptedLoadableModuleLogic):
 
   DENSE_MAX_POINTS = 300_000
   DENSE_MAX_TRIS   = 500_000
@@ -319,7 +319,7 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
         g.AddInputData(poly)
     g.Update()
     return names, g.GetOutput()
-  
+
   def _median_abs_signed_distance(self, ipd, pts_np):
     if ipd is None or pts_np.size==0:
       return float('inf')
@@ -381,7 +381,7 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
       names.append(k)
     gm.Update(); gl.Update()
     return names, gm.GetOutput(), names, gl.GetOutput()
-  
+
   def _mesh_density_score(self, pd):
     if pd is None or pd.GetNumberOfPoints()==0: return False, 0, 0, float('inf')
     tri = vtk.vtkTriangleFilter(); tri.SetInputData(pd); tri.PassLinesOff(); tri.PassVertsOff(); tri.Update()
@@ -422,9 +422,9 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
           "• Slicer: Surface Toolbox → Decimate\n"
           "• Or pre-process with vtkDecimatePro/vtkQuadricDecimation.")
     try:
-      slicer.util.warningDisplay(msg, windowTitle="BUILDER: Dense mesh")
+      slicer.util.warningDisplay(msg, windowTitle="Atlas Builder: Dense mesh")
     except Exception:
-      print("[BUILDER][WARN]", msg)
+      print("[MorphoWeave Atlas Builder][WARN]", msg)
 
   # -------- Pre/post processing --------
   def cleanPolyData(self, pd, *, tri=True, merge_tol=0.0, fill_holes=0.0, decimate=0.0, smooth_iter=0, normals=True):
@@ -567,7 +567,7 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
       t2 = vtk.vtkThinPlateSplineTransform(); t2.SetSourceLandmarks(baseLM); t2.SetTargetLandmarks(mean); t2.SetBasisToR()
       f2 = vtk.vtkTransformPolyDataFilter(); f2.SetInputData(baseMesh); f2.SetTransform(t2); f2.Update()
       bWarp = f2.GetOutput()
-    
+
     bWarpPts_np = vtk_np.vtk_to_numpy(bWarp.GetPoints().GetData()).astype(np.float64, copy=False)
     bad = ~np.isfinite(bWarpPts_np).all(axis=1)
     if bad.any():
@@ -969,3 +969,12 @@ class BUILDERLogic(ScriptedLoadableModuleLogic):
     self._harden_if_parented(atlasModelNode); self._harden_if_parented(atlasLMNode)
     slicer.util.saveNode(atlasModelNode, os.path.join(atlasDir, "atlas_model.ply"))
     slicer.util.saveNode(atlasLMNode,   os.path.join(atlasDir, "atlas_sparse_landmarks.mrk.json"))
+
+
+class MorphoWeaveAtlasBuilderTest(ScriptedLoadableModuleTest):
+  def setUp(self):
+    slicer.mrmlScene.Clear(0)
+
+  def runTest(self):
+    self.setUp()
+    self.assertIsNotNone(MorphoWeaveAtlasBuilderLogic())

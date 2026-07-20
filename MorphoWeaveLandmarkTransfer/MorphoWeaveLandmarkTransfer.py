@@ -1,4 +1,4 @@
-import os, logging, copy, json, threading, importlib, time, numpy as np
+import os, logging, copy, json, importlib, time, numpy as np
 import vtk, qt, ctk, slicer
 from slicer.ScriptedLoadableModule import *
 import vtk.util.numpy_support as vtk_np
@@ -72,38 +72,36 @@ def bounds_diag(node_or_pd):
     return float(np.linalg.norm(b[:,1]-b[:,0]))
 
 # ---------- Module ----------
-class PREDICT(ScriptedLoadableModule):
+class MorphoWeaveLandmarkTransfer(ScriptedLoadableModule):
   def __init__(self, parent):
     ScriptedLoadableModule.__init__(self, parent)
-    self.parent.title = "PREDICT"
-    self.parent.categories = ["ATLAS"]
+    self.parent.title = "Landmark Transfer"
+    self.parent.categories = ["MorphoWeave"]
     self.parent.dependencies = []
     self.parent.contributors = ["Arthur Porto"]
     self.parent.helpText = (
       """
-          ATLAS — Automated Template-based Landmark Alignment System — 
-          is a two-stage landmark transfer and morphometric alignment tool. It combines global rigid registration 
-          with Statistical Shape Model–guided Coherent Point Drift for non-rigid alignment, 
-          followed by an optional surface projection refinement to ensure landmarks lie precisely on target meshes. 
-          PREDICT supports both single-specimen optimization and batch landmark transfer, allowing consistent application 
-          of tuned alignment parameters across large datasets.
-          <p>For more information see the 
-          <a href=\"https://github.com/SlicerMorph/SlicerMorph/tree/master/Docs/PREDICT\">online documentation</a>.</p>
+          MorphoWeave Landmark Transfer combines global rigid registration with
+          Statistical Shape Model-guided Coherent Point Drift for non-rigid alignment,
+          followed by optional surface projection refinement. It supports both
+          single-specimen optimization and batch landmark transfer.
+          <p>For more information see the
+          <a href=\"https://github.com/agporto/SlicerMorphoWeave/blob/main/tutorial/README.md#landmark-transfer\">online documentation</a>.</p>
       """
     )
     self.parent.acknowledgementText = "This module was developed by Arthur Porto"
 
 # ---------- Widget ----------
-class PREDICTWidget(ScriptedLoadableModuleWidget):
+class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
   def __init__(self, parent=None):
     ScriptedLoadableModuleWidget.__init__(self, parent)
     self.cloneFolderItemID = None
     self._deps_ready = False
-    qt.QTimer.singleShot(0, lambda: self._ensure_deps_async())
+    qt.QTimer.singleShot(0, self._ensure_dependencies)
 
-  # ----- Dependencies installer (async-safe) -----
-  def _ensure_deps_async(self):
-    import importlib.util, inspect, traceback, sys, subprocess
+  # ----- Slicer-native dependency installer -----
+  def _ensure_dependencies(self):
+    import importlib.util, inspect, traceback, sys
     required=[("tiny3d","tiny3d"),("biocpd","biocpd>=1.3")]
 
     def hasPoseRealDataAPI():
@@ -126,39 +124,29 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
             missing.append(module_name)
     if missing:
         labels=[spec for name,spec in required if name in missing]
-        msg="PREDICT needs or must upgrade: "+", ".join(labels)+".\nInstall now?"
+        msg="Landmark Transfer needs or must upgrade: "+", ".join(labels)+".\nInstall now?"
         if not slicer.util.confirmOkCancelDisplay(msg):
             slicer.util.errorDisplay("Dependencies not installed; some actions may fail."); return
-    self._deps_ready=False; self._deps_error=None
-    def worker():
-        try:
-            if missing:
-                specs=[spec for m,spec in required if m in missing]
-                subprocess.check_call([sys.executable,"-m","pip","install","--upgrade",*specs])
-                if "biocpd" in missing:
-                    for module_name in [name for name in sys.modules if name == "biocpd" or name.startswith("biocpd.")]:
-                        sys.modules.pop(module_name, None)
-                    importlib.invalidate_caches()
-            for m in ("tiny3d","biocpd","scipy.spatial","scipy.optimize"):
-                importlib.import_module(m)
-            if not hasPoseRealDataAPI():
-                raise RuntimeError(
-                    "The installed biocpd>=1.3 wheel does not provide the required Pose-EM API."
-                )
-        except Exception as e:
-            self._deps_error=(e, traceback.format_exc())
-        else:
-            self._deps_ready=True
-    threading.Thread(target=worker, daemon=True).start()
-    def poll():
-        if self._deps_error:
-            e,tb=self._deps_error; self._deps_error=None
-            slicer.util.errorDisplay(f"PREDICT install failed:\n{e}\n{tb}"); return
-        if self._deps_ready:
-            slicer.util.showStatusMessage("PREDICT: dependencies ready", 3000)
-            return
-        qt.QTimer.singleShot(150, poll)
-    qt.QTimer.singleShot(0, poll)
+    self._deps_ready=False
+    try:
+        if missing:
+            specs=[spec for module_name,spec in required if module_name in missing]
+            slicer.util.pip_install(["--upgrade", *specs])
+            if "biocpd" in missing:
+                for module_name in [name for name in sys.modules if name == "biocpd" or name.startswith("biocpd.")]:
+                    sys.modules.pop(module_name, None)
+                importlib.invalidate_caches()
+        for module_name in ("tiny3d","biocpd","scipy.spatial","scipy.optimize"):
+            importlib.import_module(module_name)
+        if not hasPoseRealDataAPI():
+            raise RuntimeError(
+                "The installed biocpd>=1.3 wheel does not provide the required Pose-EM API."
+            )
+    except Exception as error:
+        slicer.util.errorDisplay(f"Landmark Transfer dependency installation failed:\n{error}\n{traceback.format_exc()}")
+        return
+    self._deps_ready=True
+    slicer.util.showStatusMessage("Landmark Transfer: dependencies ready", 3000)
 
 
   # ----- Visual helpers -----
@@ -270,7 +258,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
       if p["kind"]=="check": d[p['key']] = bool(w.checked)
       else: d[p['key']] = float(w.value) if hasattr(w,'value') else w.value()
     # integers for specific keys
-    d["maxRANSAC"] = int(d["maxRANSAC"]); d["max_iterations"] = int(d["max_iterations"]) 
+    d["maxRANSAC"] = int(d["maxRANSAC"]); d["max_iterations"] = int(d["max_iterations"])
     d["normalSearchRadius"] = int(d["normalSearchRadius"]); d["FPFHSearchRadius"] = int(d["FPFHSearchRadius"])
     return d
 
@@ -349,7 +337,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
     prepInfo = qt.QLabel(
       "Recommended flow:\n"
-      "1) Ensure a valid SSM table is loaded (from DATABASE)\n"
+      "1) Ensure a valid SSM table is loaded (from Model Library)\n"
       "2) Run Single mode to tune parameters\n"
       "3) Optionally optimize template\n"
       "4) Run Batch mode for full dataset"
@@ -357,10 +345,10 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     prepInfo.setWordWrap(True)
     prepareLayout.addRow(prepInfo)
     prepButtons = qt.QHBoxLayout()
-    for name in ("DATABASE", "Single Run", "Batch", "Template Optimization"):
+    for name in ("Model Library", "Single Run", "Batch", "Template Optimization"):
       btn = qt.QPushButton(name)
-      if name == "DATABASE":
-        btn.clicked.connect(lambda: slicer.util.selectModule("DATABASE"))
+      if name == "Model Library":
+        btn.clicked.connect(lambda: slicer.util.selectModule("MorphoWeaveModelLibrary"))
       elif name == "Single Run":
         btn.clicked.connect(lambda: tabsWidget.setCurrentWidget(alignSingleTab))
       elif name == "Batch":
@@ -461,7 +449,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self.poseOutlierWeight=qt.QDoubleSpinBox(); self.poseOutlierWeight.minimum=0.0; self.poseOutlierWeight.maximum=0.99; self.poseOutlierWeight.singleStep=0.01; self.poseOutlierWeight.decimals=2; self.poseOutlierWeight.value=0.05; self.poseOutlierWeight.setToolTip("Pose-initializer outlier weight; independent of downstream PCA-CPD settings."); poseOptL.addRow("Pose outlier weight:", self.poseOutlierWeight)
     self.poseIdentityPrior=qt.QDoubleSpinBox(); self.poseIdentityPrior.minimum=0.01; self.poseIdentityPrior.maximum=0.99; self.poseIdentityPrior.singleStep=0.05; self.poseIdentityPrior.decimals=2; self.poseIdentityPrior.value=0.20; poseOptL.addRow("Identity-pose prior:", self.poseIdentityPrior)
     self.poseSeed=qt.QSpinBox(); self.poseSeed.minimum=0; self.poseSeed.maximum=2147483647; self.poseSeed.value=0; poseOptL.addRow("Deterministic seed:", self.poseSeed)
-    self.poseNJobs=qt.QSpinBox(); self.poseNJobs.minimum=1; self.poseNJobs.maximum=128; self.poseNJobs.value=4; self.poseNJobs.setToolTip("Parallel pose hypotheses. PREDICT uses sequential BLAS locally when supported; unsupported native backends safely fall back to one worker."); poseOptL.addRow("Pose workers:", self.poseNJobs)
+    self.poseNJobs=qt.QSpinBox(); self.poseNJobs.minimum=1; self.poseNJobs.maximum=128; self.poseNJobs.value=4; self.poseNJobs.setToolTip("Parallel pose hypotheses. Landmark Transfer uses sequential BLAS locally when supported; unsupported native backends safely fall back to one worker."); poseOptL.addRow("Pose workers:", self.poseNJobs)
     self.optimizeButton=qt.QPushButton("Run Template Optimization"); optL.addRow(self.optimizeButton)
 
     # --- Optimization Tab (append this) ---
@@ -480,7 +468,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     # --- Advanced Settings (declarative) ---
     self._build_advanced_tab(advancedSettingsTabLayout)
 
-    
+
     # Sync Batch checkbox <-> Advanced param widget
     self.skipOptBatchChk.setChecked(bool(self.param_skipOptimization.checked))
     self.skipOptBatchChk.toggled.connect(
@@ -580,11 +568,11 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     shNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLSubjectHierarchyNode")
     if not shNode: raise RuntimeError("SubjectHierarchy node not found")
     invalid = shNode.GetInvalidItemID() if hasattr(shNode, "GetInvalidItemID") else -1
-    rootName = "PREDICT runs"; rootID = shNode.GetItemByName(rootName)
+    rootName = "MorphoWeave Landmark Transfer runs"; rootID = shNode.GetItemByName(rootName)
     if rootID in (None, invalid): rootID = shNode.CreateFolderItem(shNode.GetSceneItemID(), rootName)
     if getattr(self, "cloneFolderItemID", None) not in (None, invalid): return self.cloneFolderItemID
     from datetime import datetime
-    runName = f"Run {datetime.now().strftime('%Y%m%d-%H%M%S')}"; 
+    runName = f"Run {datetime.now().strftime('%Y%m%d-%H%M%S')}";
     if label: runName += f" - {label}"
     self.cloneFolderItemID = shNode.CreateFolderItem(rootID, runName)
     return self.cloneFolderItemID
@@ -641,7 +629,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
   def onCancelBatch(self):
     self._cancelBatch = True; self.batchCancelButton.enabled = False
     slicer.util.showStatusMessage("Cancelling batch…", 2000)
-  
+
 
   def onSelectMultiProcess(self): self._enable_batch()
 
@@ -650,7 +638,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
   # ----- Single alignment flow -----
   def onSubsampleButton(self):
-    logic = PREDICTLogic(); self._hideInputNodes()
+    logic = MorphoWeaveLandmarkTransferLogic(); self._hideInputNodes()
     srcOrig = self.sourceModelSelector.currentNode(); tgtOrig = self.targetModelSelector.currentNode()
     corresOrig  = self.sourceFiducialSelector.currentNode(); lmOrig  = self.sourceSparseFiducialSelector.currentNode()
     self.clearCloneFolder(); run_label = f"{srcOrig.GetName()}→{tgtOrig.GetName()}"; self.ensureCloneFolder(label=run_label)
@@ -679,11 +667,11 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
     self._parentNode(self.targetCloudNode); self.updateLayout(); self.alignButton.enabled = True
     self.subsampleInfo.clear(); self.subsampleInfo.insertPlainText(f':: Your subsampled source pointcloud has {len(src_np)} points.\n')
     self.subsampleInfo.insertPlainText(f':: Your subsampled target pointcloud has {len(tgt_np)} points.')
-    self.updateLayout(focusNode=self.tgtTemp)  
+    self.updateLayout(focusNode=self.tgtTemp)
 
 
   def onAlignButton(self):
-    logic = PREDICTLogic()
+    logic = MorphoWeaveLandmarkTransferLogic()
     self.transformMatrix = logic.estimateTransform(self.sourcePoints, self.targetPoints, self.sourceFeatures, self.targetFeatures, self.voxelSize, self.parameterDictionary)
     self.ICPTransformNode = logic.convertMatrixToTransformNode(self.transformMatrix, 'Rigid Transformation Matrix')
     self._parentNode(self.ICPTransformNode)
@@ -707,7 +695,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
 
   def onCPDRegistration(self):
-      logic = PREDICTLogic()
+      logic = MorphoWeaveLandmarkTransferLogic()
 
       alignedSourceCorres_np = slicer.util.arrayFromMarkupsControlPoints(self.corresTemp)
       alignedSourceLM_np     = slicer.util.arrayFromMarkupsControlPoints(self.lmTemp)
@@ -811,7 +799,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
   # ----- Batch processing -----
   def onApplyLandmarkMulti(self):
-    logic = PREDICTLogic(); projectionFactor = self._proj_frac(); d=self.parameterDictionary
+    logic = MorphoWeaveLandmarkTransferLogic(); projectionFactor = self._proj_frac(); d=self.parameterDictionary
     self._cancelBatch=False; self.batchProgress.setValue(0); self.batchCancelButton.enabled=True
     last_ui_pump = [0.0]
     last_status = [0.0]
@@ -819,7 +807,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
       pct = int(100.0 * done / max(1, total)); self.batchProgress.setValue(pct)
       now = time.monotonic()
       if label and (done == total or (now - last_status[0] >= 0.10)):
-        slicer.util.showStatusMessage(f"PREDICT batch: {label}", 1500)
+        slicer.util.showStatusMessage(f"Landmark Transfer batch: {label}", 1500)
         last_status[0] = now
       if done == total or (now - last_ui_pump[0] >= 0.10):
         slicer.app.processEvents()
@@ -866,7 +854,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
   # ----- Optimization -----
   def onOptimize(self):
-      logic = PREDICTLogic()
+      logic = MorphoWeaveLandmarkTransferLogic()
       tplModelOrig = self.d2sourceModelSelector.currentNode()
       tplCorrOrig  = self.d2sourceFiducialSelector.currentNode()
       tplLandOrig  = self.d2sourceSparseFiducialSelector.currentNode()
@@ -912,7 +900,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
       finally:
           qt.QApplication.restoreOverrideCursor()
 
-  
+
       self._parentNode(tplModel)
       self._parentNode(tplCorr)
       if tplLand: self._parentNode(tplLand)
@@ -962,7 +950,7 @@ class PREDICTWidget(ScriptedLoadableModuleWidget):
 
 
 # ---------- Logic ----------
-class PREDICTLogic(ScriptedLoadableModuleLogic):
+class MorphoWeaveLandmarkTransferLogic(ScriptedLoadableModuleLogic):
   def __init__(self):
     super().__init__()
     self.rigidTransformNode=None
@@ -1028,7 +1016,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           if status_callback: status_callback(f"[{i+1}/{total}] Load target")
           tgt_node=slicer.util.loadModel(tgt_path)
           if tgt_node is None or tgt_node.GetPolyData() is None: raise RuntimeError(f"Failed to load: {tgt_path}")
-          dn=tgt_node.GetDisplayNode(); 
+          dn=tgt_node.GetDisplayNode();
           if dn: dn.SetVisibility(False)
           tpl_model.SetAndObservePolyData(clone_polydata_points_only(tpl_model_orig))
           corr_np = tpl_corr_orig.copy()
@@ -1308,7 +1296,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
     )
     # Pose EM uses global pose to evaluate shape hypotheses, but template
     # optimization returns only the selected SSM shape. Keep it in the SSM's
-    # original frame so the established ATLAS scaling, rigid, and deformable
+    # original frame so the established MorphoWeave scaling, rigid, and deformable
     # stages always run afterward.
     newCorr = ssm_sample(mean, modes, result.coefficients)
 
@@ -1392,7 +1380,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       M = ssmData["mean"].shape[0]
       if M != sourceLM.shape[0]:
           raise ValueError(f"SSM table has {M} points but sourceLM has {sourceLM.shape[0]}")
-      
+
       modes = ssmData["U"]
       eig = ssmData["eig"]
 
@@ -1407,7 +1395,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
 
       # keep the first k modes/eigenvalues, preserving original order
       modes = modes[:, :, :k]
-      eigvals_eff = eig[:k]#* (scale ** 2)  
+      eigvals_eff = eig[:k]#* (scale ** 2)
 
       # Rigid rotation for the modes
       if rigidMatrix is None:
@@ -1421,10 +1409,10 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
 
       U_aligned = np.einsum('ij,pjk->pik', R, modes).reshape(3*M, -1)
 
-      def _diag(P): 
+      def _diag(P):
         if P.size==0: return 1.0
         bmin,bmax = P.min(0), P.max(0); return float(np.linalg.norm(bmax-bmin))
-      
+
       d_tgt = _diag(np.asarray(targetSLM)); s20 = 20.0/max(d_tgt,1e-12)
       src_n = np.asarray(sourceLM)*s20; tgt_n = np.asarray(targetSLM)*s20
 
@@ -1446,7 +1434,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
           normalize=True                    # << key change
       )
       warped_landmarks, _ = pca.register()
-      
+
       if bool(parameters.get("skipFineCPD", False)):
         return warped_landmarks / s20
 
@@ -1481,7 +1469,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       )
       warped, _ = final.register()
       return warped / scale
-  
+
   def _triangulate_polydata(self, pd):
     tf = vtk.vtkTriangleFilter()
     tf.SetInputData(pd)
@@ -1491,60 +1479,60 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
 
   def _cotangent_laplacian(self, V, F):
       from scipy import sparse
-      
+
       # 1. Compute edge vectors for all faces at once
       # V has shape (N, 3), F has shape (M, 3)
       A = V[F[:, 0]]; B = V[F[:, 1]]; C = V[F[:, 2]]
       e0 = B - C; e1 = C - A; e2 = A - B
-      
+
       # 2. Compute area/normals (cross product magnitude)
       # Using the fact that |cross(u,v)| = 2 * Area
       cross_prod = np.cross(e0, -e2)
       norm_n = np.linalg.norm(cross_prod, axis=1)
-      
+
       # Filter degenerate triangles (zero area)
       valid = norm_n > 1e-12
       F = F[valid]; e0 = e0[valid]; e1 = e1[valid]; e2 = e2[valid]; norm_n = norm_n[valid]
-      
+
       # 3. Compute Cotangents (dot / magnitude)
       # cot(angle) = dot(u, v) / |cross(u, v)|
       # We divide by 2*Area (norm_n) later, so we pre-multiply terms if needed
       # Actually simpler: cot(alpha) = (e1 . e2) / |e1 x e2| ... careful with signs/orientation
       # Standard formula: cot at vertex i (opposite edge e0) is -dot(e1, e2) / norm(cross(e1, e2))
-      
+
       fact = 0.5 / norm_n
       c0 = -np.sum(e1 * e2, axis=1) * fact
       c1 = -np.sum(e2 * e0, axis=1) * fact
       c2 = -np.sum(e0 * e1, axis=1) * fact
-      
+
       # 4. Construct Sparse Matrix
       # We have 3 cotangents per face. We need to assemble them into the NxN matrix.
       # Rows/Cols indices
       ii = F[:, [1, 2, 0]].ravel()
       jj = F[:, [2, 0, 1]].ravel()
       data = np.concatenate([c0, c1, c2]) # Corresponding cotangents
-      
+
       # Use coo_matrix to handle duplicate entries (summing them automatically)
       # We need both (i,j) and (j,i) symmetric entries
       rows = np.concatenate([ii, jj])
       cols = np.concatenate([jj, ii])
-      vals = np.concatenate([data, data]) * 0.5 
-      
+      vals = np.concatenate([data, data]) * 0.5
+
       n = V.shape[0]
       L = sparse.coo_matrix((vals, (rows, cols)), shape=(n, n)).tocsr()
-      
+
       # Diagonal is negative sum of off-diagonals
       L.setdiag(-np.array(L.sum(axis=1)).ravel())
-      
+
       # Mass matrix (lumped area)
       # Area per vertex is sum of 1/3 area of adjacent faces
       area_per_face = 0.5 * norm_n
       M_diag = np.zeros(n)
       np.add.at(M_diag, F, area_per_face[:, None] / 3.0)
       M = sparse.diags(np.maximum(M_diag, 1e-12))
-      
+
       return L, M
-  
+
   def warp_model_biharmonic(self, modelNode, src_corr, dst_corr, lam=1e4):
       """
       Solve (L^T M^{-1} L + lam*W) X = lam*W*target  for X (per coordinate),
@@ -1602,7 +1590,7 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       pts.Modified(); modelNode.GetPolyData().Modified()
 
       return V0, V1, F  # handy if you want barycentric landmark warping
-  
+
   def warp_markups_barycentric(self, markupsNode, V0, V1, F):
     """Project each point to the nearest triangle on (V0,F), get barycentric
     coords there, then carry to (V1,F)."""
@@ -1857,8 +1845,8 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       sourceSize = np.linalg.norm(tmp_src.get_max_bound() - tmp_src.get_min_bound()); targetSize = np.linalg.norm(tmp_tgt.get_max_bound() - tmp_tgt.get_min_bound())
       source_scaling = 1.0 / sourceSize if sourceSize > 0 else 1.0; target_scaling = 1.0 / targetSize if targetSize > 0 else 1.0
       source.scale(source_scaling, center=source_center); target.scale(target_scaling, center=target_center)
-    source_down, source_fpfh = self.preprocess_point_cloud(source, voxel_size*cov, parameters["normalSearchRadius"], parameters["FPFHSearchRadius"]) 
-    target_down, target_fpfh = self.preprocess_point_cloud(target, voxel_size, parameters["normalSearchRadius"], parameters["FPFHSearchRadius"]) 
+    source_down, source_fpfh = self.preprocess_point_cloud(source, voxel_size*cov, parameters["normalSearchRadius"], parameters["FPFHSearchRadius"])
+    target_down, target_fpfh = self.preprocess_point_cloud(target, voxel_size, parameters["normalSearchRadius"], parameters["FPFHSearchRadius"])
     if not skipScaling:
       src_pts = np.asarray(source_down.points); tgt_pts = np.asarray(target_down.points)
       src_pts = (src_pts - source_center) / source_scaling + source_center
@@ -2277,8 +2265,8 @@ class PREDICTLogic(ScriptedLoadableModuleLogic):
       return L.tocsr(), W.tocsr(), sigma
 
 
-class PREDICTTest(ScriptedLoadableModuleTest):
+class MorphoWeaveLandmarkTransferTest(ScriptedLoadableModuleTest):
   def setUp(self): slicer.mrmlScene.Clear(0)
-  def runTest(self): self.setUp(); self.test_PREDICT1()
-  def test_PREDICT1(self):
-    self.delayDisplay("Starting the test"); logic = PREDICTLogic(); self.assertIsNotNone(logic); self.delayDisplay('Test passed!')
+  def runTest(self): self.setUp(); self.test_MorphoWeaveLandmarkTransfer1()
+  def test_MorphoWeaveLandmarkTransfer1(self):
+    self.delayDisplay("Starting the test"); logic = MorphoWeaveLandmarkTransferLogic(); self.assertIsNotNone(logic); self.delayDisplay('Test passed!')

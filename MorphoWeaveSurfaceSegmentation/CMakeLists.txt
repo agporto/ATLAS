@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-set(MODULE_NAME BUILDER)
+set(MODULE_NAME MorphoWeaveSurfaceSegmentation)
 
 #-----------------------------------------------------------------------------
 set(MODULE_PYTHON_SCRIPTS
@@ -16,7 +16,7 @@ slicerMacroBuildScriptedModule(
   SCRIPTS ${MODULE_PYTHON_SCRIPTS}
   RESOURCES ${MODULE_PYTHON_RESOURCES}
   WITH_GENERIC_TESTS
-  ) 
+  )
 
 #-----------------------------------------------------------------------------
 if(BUILD_TESTING)

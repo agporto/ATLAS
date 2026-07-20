@@ -11,14 +11,14 @@ import slicer, qt, ctk, vtk
 from slicer.ScriptedLoadableModule import *
 
 #
-# DATABASE
+# MorphoWeaveModelLibrary
 #
 
-class DATABASE(ScriptedLoadableModule):
+class MorphoWeaveModelLibrary(ScriptedLoadableModule):
   def __init__(self, parent):
     ScriptedLoadableModule.__init__(self, parent)
-    self.parent.title = "DATABASE"
-    self.parent.categories = ["ATLAS"]
+    self.parent.title = "Model Library"
+    self.parent.categories = ["MorphoWeave"]
     self.parent.dependencies = []
     self.parent.contributors = ["Arthur Porto"]
     self.parent.helpText = """
@@ -28,17 +28,17 @@ class DATABASE(ScriptedLoadableModule):
     self.parent.acknowledgementText = ""
 
 #
-# DATABASELogic
+# MorphoWeaveModelLibraryLogic
 #
 
-class DATABASELogic(ScriptedLoadableModuleLogic):
+class MorphoWeaveModelLibraryLogic(ScriptedLoadableModuleLogic):
   @staticmethod
   def build_ssm(shapes, variance_threshold=0.99, max_modes=None):
       n_shapes,n_pts,dim=shapes.shape
       X=shapes.reshape(n_shapes,-1).astype(np.float64,copy=False)
       mu=X.mean(0); Xc=X-mu
       n,D=Xc.shape
-      if n<2 or not np.any(Xc): 
+      if n<2 or not np.any(Xc):
           mean=mu.reshape(n_pts,dim).astype(np.float32,copy=False)
           modes=np.zeros((n_pts,dim,0),np.float32)
           eig=np.zeros((0,),np.float64)
@@ -74,7 +74,7 @@ class DATABASELogic(ScriptedLoadableModuleLogic):
     if 'LPS' in s or s=='0': return 'LPS'
     if 'RAS' in s or s=='1': return 'RAS'
     return 'RAS'
-  
+
   def _read_fcsv(self, path):
     cs='RAS'; pts=[]
     with open(path,'r') as f:
@@ -87,7 +87,7 @@ class DATABASELogic(ScriptedLoadableModuleLogic):
           try: pts.append((float(parts[1]),float(parts[2]),float(parts[3])))
           except Exception as e: logging.warning(f"Could not parse point in file {path}: {e}")
     return np.asarray(pts, dtype=float), cs
-  
+
   def _read_json(self, path):
     data=json.load(open(path,'r'))
     m=(data.get('markups') or [{}])[0]
@@ -252,20 +252,20 @@ class DATABASELogic(ScriptedLoadableModuleLogic):
       return True, f"SSM '{dbName}' loaded. Table Node has {n_modes} modes."
     except Exception as e:
       return False, f"Error loading database: {e}"
-      
-  def _suffixes(self, p): 
+
+  def _suffixes(self, p):
     s=Path(p).suffixes
     return "".join(s) if s else Path(p).suffix
 
 
 #
-# DATABASEWidget
+# MorphoWeaveModelLibraryWidget
 #
 
-class DATABASEWidget(ScriptedLoadableModuleWidget):
+class MorphoWeaveModelLibraryWidget(ScriptedLoadableModuleWidget):
   def __init__(self, parent=None):
     ScriptedLoadableModuleWidget.__init__(self, parent)
-    self.logic = DATABASELogic()
+    self.logic = MorphoWeaveModelLibraryLogic()
     self.ssm_data = {}             # persistent caches for visualization
     self.pcSliders = []            # list[ctk.ctkSliderWidget]
     self.methodCombo = None        # TPS / Biharmonic
@@ -415,14 +415,22 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
 
   def initializeDatabasePath(self):
     settings = qt.QSettings()
-    defaultPath = os.path.join(Path.home(), "Documents", "AtlasDatabase")
-    dbPath = settings.value('DATABASE/databasePath', defaultPath)
+    newKey = 'MorphoWeaveModelLibrary/databasePath'
+    legacyKey = 'DATABASE/databasePath'
+    defaultPath = os.path.join(Path.home(), "Documents", "MorphoWeaveModels")
+    if settings.contains(newKey):
+      dbPath = settings.value(newKey, defaultPath)
+    elif settings.contains(legacyKey):
+      dbPath = settings.value(legacyKey, defaultPath)
+      settings.setValue(newKey, dbPath)
+    else:
+      dbPath = defaultPath
     self.databasePathSelector.setCurrentPath(dbPath)
 
   def onDatabasePathChanged(self, path):
     if os.path.isdir(path):
       settings = qt.QSettings()
-      settings.setValue('DATABASE/databasePath', path)
+      settings.setValue('MorphoWeaveModelLibrary/databasePath', path)
       self.refreshDatabaseList()
 
   def refreshDatabaseList(self):
@@ -563,7 +571,7 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     def progress_callback(value, text):
       self.progressBar.setValue(value)
       self.progressBar.setFormat(f"{text} ({value}%)")
-      slicer.app.processEvents() 
+      slicer.app.processEvents()
 
     success, message = self.logic.ingestSSMDatabase(
       dbPath=db_path,
@@ -633,7 +641,7 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     self.ssm_data = {}
     self.resetButton.enabled = False
     self._recreateSlidersPanel()
-    
+
     modelNode = self.explorerModelSelector.currentNode()
     landmarkNode = self.explorerLandmarksSelector.currentNode()
     tableNode = self.explorerTableSelector.currentNode()
@@ -650,7 +658,7 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     if num_rows_in_table != (num_points_in_landmarks * 3):
       slicer.util.errorDisplay("Mismatch between number of landmarks and data in SSM table.")
       return
-    
+
     need=int(tableNode.GetAttribute("ssm_npoints") or 0)
     if need and need!=num_points_in_landmarks:
       slicer.util.errorDisplay("SSM table point count does not match landmark count.")
@@ -660,7 +668,7 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     self.ssm_data['base_template_vertices'] = slicer.util.arrayFromModelPoints(modelNode).astype(np.float64, copy=True)
     self.ssm_data['template_vertices'] = self.ssm_data['base_template_vertices'].copy()
     self.ssm_data['original_points_RAS'] = slicer.util.arrayFromMarkupsControlPoints(landmarkNode).astype(np.float64, copy=True)
-    
+
     mean_flat = slicer.util.arrayFromTableColumn(tableNode, "mean_shape")
     self.ssm_data['mean_RAS'] = mean_flat.reshape(num_points_in_landmarks, 3).astype(np.float64, copy=False)
 
@@ -669,7 +677,7 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
     if num_modes_from_table <= 0:
       slicer.util.infoDisplay("The loaded SSM has no modes of variation.")
       return
-    
+
     for i in range(num_modes_from_table):
       mode_flat = slicer.util.arrayFromTableColumn(tableNode, f"mode_{i}")
       modes.append(mode_flat.reshape(num_points_in_landmarks, 3))
@@ -914,9 +922,13 @@ class DATABASEWidget(ScriptedLoadableModuleWidget):
 
 
 
-# DATABASETest
+# MorphoWeaveModelLibraryTest
 #
 
-class DATABASETest(ScriptedLoadableModuleTest):
-  def setUp(self): slicer.mrmlScene.Clear(0)
-  def runTest(self): self.setUp()
+class MorphoWeaveModelLibraryTest(ScriptedLoadableModuleTest):
+  def setUp(self):
+    slicer.mrmlScene.Clear(0)
+
+  def runTest(self):
+    self.setUp()
+    self.assertIsNotNone(MorphoWeaveModelLibraryLogic())

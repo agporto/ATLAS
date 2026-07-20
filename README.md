@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="ATLAS logo" width="460">
+</p>
+
 <h1 align="center">MorphoWeave</h1>
 
 <p align="center"><strong>Weaving biological form into a common geometric language</strong></p>

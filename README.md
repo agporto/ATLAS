@@ -2,8 +2,6 @@
   <img src="logo.png" alt="MorphoWeave logo" width="460">
 </p>
 
-<h1 align="center">MorphoWeave</h1>
-
 <p align="center"><strong>Weaving biological form into a common geometric language</strong></p>
 
 <p align="center">

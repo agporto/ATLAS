@@ -7,10 +7,14 @@ _RESOURCE_DIR = Path(__file__).resolve().parent / "Resources" / "Python"
 if str(_RESOURCE_DIR) not in sys.path:
     sys.path.insert(0, str(_RESOURCE_DIR))
 
-from LegacyBuilder import BUILDER, BUILDERLogic, BUILDERWidget
+from ConstructionImplementation import (
+    BUILDER as _ConstructionModuleBase,
+    BUILDERLogic as _ConstructionLogicBase,
+    BUILDERWidget as _ConstructionWidgetBase,
+)
 
 
-class CoherentAtlasConstruction(BUILDER):
+class CoherentAtlasConstruction(_ConstructionModuleBase):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent.title = "Atlas Construction"
@@ -21,11 +25,11 @@ class CoherentAtlasConstruction(BUILDER):
         ) + self.getDefaultModuleDocumentationLink()
 
 
-class CoherentAtlasConstructionWidget(BUILDERWidget):
+class CoherentAtlasConstructionWidget(_ConstructionWidgetBase):
     pass
 
 
-class CoherentAtlasConstructionLogic(BUILDERLogic):
+class CoherentAtlasConstructionLogic(_ConstructionLogicBase):
     pass
 
 

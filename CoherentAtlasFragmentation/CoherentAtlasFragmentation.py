@@ -7,10 +7,14 @@ _RESOURCE_DIR = Path(__file__).resolve().parent / "Resources" / "Python"
 if str(_RESOURCE_DIR) not in sys.path:
     sys.path.insert(0, str(_RESOURCE_DIR))
 
-from LegacySegmentation import SEGMENTATION, SEGMENTATIONLogic, SEGMENTATIONWidget
+from FragmentationImplementation import (
+    SEGMENTATION as _FragmentationModuleBase,
+    SEGMENTATIONLogic as _FragmentationLogicBase,
+    SEGMENTATIONWidget as _FragmentationWidgetBase,
+)
 
 
-class CoherentAtlasFragmentation(SEGMENTATION):
+class CoherentAtlasFragmentation(_FragmentationModuleBase):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent.title = "Surface Fragmentation"
@@ -21,11 +25,11 @@ class CoherentAtlasFragmentation(SEGMENTATION):
         ) + self.getDefaultModuleDocumentationLink()
 
 
-class CoherentAtlasFragmentationWidget(SEGMENTATIONWidget):
+class CoherentAtlasFragmentationWidget(_FragmentationWidgetBase):
     pass
 
 
-class CoherentAtlasFragmentationLogic(SEGMENTATIONLogic):
+class CoherentAtlasFragmentationLogic(_FragmentationLogicBase):
     pass
 
 

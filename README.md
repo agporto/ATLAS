@@ -5,7 +5,7 @@
 <p align="center"><strong>Weaving biological form into a common geometric language</strong></p>
 
 <p align="center">
-  A 3D Slicer extension for anatomical atlas construction, statistical shape modeling, deformable registration, and automated landmark transfer.
+  A 3D Slicer extension for anatomical atlas construction, statistical shape modeling, biology-guided deformable registration, and automated landmark transfer.
 </p>
 
 <p align="center">

@@ -1,13 +1,13 @@
 <p align="center">
-  <img src="logo.png" alt="ATLAS logo" width="460">
+  <img src="logo.png" alt="CoherentAtlas logo" width="220">
 </p>
 
-<h1 align="center">ATLAS</h1>
+<h1 align="center">CoherentAtlas</h1>
 
-<p align="center"><strong>Scaling 3D morphometrics with atlas-based automated landmarking</strong></p>
+<p align="center"><strong>Population-informed atlas construction, landmark transfer, and surface fragmentation for 3D biological form</strong></p>
 
 <p align="center">
-  A 3D Slicer extension for anatomical atlas construction, statistical shape modeling, deformable registration, and automated landmark transfer.
+  A 3D Slicer extension for building population atlases, managing reusable statistical shape model libraries, registering new specimens, transferring landmarks, and generating corresponding surface fragments.
 </p>
 
 <p align="center">
@@ -17,20 +17,21 @@
 </p>
 
 <p align="center">
-  <img src="tutorial/images/20.png" alt="ATLAS landmark-transfer result in 3D Slicer" width="760">
+  <img src="tutorial/images/20.png" alt="CoherentAtlas landmark-transfer result in 3D Slicer" width="760">
 </p>
 
 ## Overview
 
-ATLAS provides an integrated workflow for generating and applying 3D anatomical atlases. It supports:
+CoherentAtlas provides an integrated workflow for population-based 3D morphometrics. It supports:
 
-- construction of mean atlas surfaces and dense correspondences from meshes and sparse landmarks;
-- creation and interactive exploration of PCA-based statistical shape models;
+- construction of mean atlas surfaces and index-consistent dense correspondences from meshes and sparse landmarks;
+- creation, storage, loading, and exploration of reusable PCA statistical shape model libraries;
 - single-specimen and batch landmark transfer using rigid and shape-model-guided deformable registration;
-- target-specific template optimization before registration; and
-- correspondence-guided segmentation of surface models.
+- target-specific template optimization, including an optional pose-marginalized expectation-maximization initializer;
+- generation of population-consistent surface fragments from dense correspondence trajectories and geometric features; and
+- a future path toward model-informed completion of partial 3D shapes.
 
-ATLAS runs within [3D Slicer](https://www.slicer.org/). [SlicerMorph](https://slicermorph.github.io/) is recommended for complementary morphometric workflows but is not required.
+CoherentAtlas runs within [3D Slicer](https://www.slicer.org/). [SlicerMorph](https://slicermorph.github.io/) is complementary but is not required.
 
 ## Installation
 
@@ -40,9 +41,9 @@ Once listed in the official Slicer Extensions Catalog:
 
 1. Open 3D Slicer.
 2. Select **View > Extension Manager**.
-3. Search for **ATLAS** and click **Install**.
+3. Search for **CoherentAtlas** and click **Install**.
 4. Restart Slicer when prompted.
-5. Find the modules under the **ATLAS** category.
+5. Find the modules under the **CoherentAtlas** category.
 
 ### Developer installation
 
@@ -54,20 +55,21 @@ In Slicer, open **Developer Tools > Extension Wizard**, choose **Select Extensio
 
 ## Workflow
 
-1. **BUILDER** aligns training meshes and landmarks and creates an atlas surface with sparse and dense correspondences.
-2. **DATABASE** converts population correspondences into a PCA statistical shape model and loads it for exploration and registration.
-3. **PREDICT** transfers landmarks to individual specimens or batches using rigid registration, SSM-guided CPD, optional fine deformation, and surface projection.
-4. **SEGMENTATION** uses dense correspondences to divide homologous surface regions consistently across specimens.
+1. **Atlas Construction** aligns training meshes and landmarks, creates a mean atlas surface, and exports sparse and dense correspondences.
+2. **Atlas Library** packages population correspondences into reusable PCA statistical shape model libraries and provides interactive mode exploration.
+3. **Landmark Transfer** adapts the atlas to individual specimens or batches using rigid registration, statistical-shape-model optimization, coherent deformable registration, and optional surface projection.
+4. **Surface Fragmentation** uses correspondence-linked geometric features and graph clustering to generate consistent labeled fragments across specimens.
+5. **Shape Completion** is planned as a future module for reconstructing missing geometry under learned population-shape constraints.
 
-A complete illustrated walkthrough is available in the [ATLAS tutorial](tutorial/README.md).
+A complete illustrated walkthrough is available in the [CoherentAtlas tutorial](tutorial/README.md).
 
 ## Modules
 
-### BUILDER
+### Atlas Construction
 
-Constructs an anatomical atlas from folders of surface models and corresponding sparse landmarks. BUILDER selects a representative reference, aligns the specimens, generates a mean surface, and derives index-consistent dense correspondences.
+Constructs a population atlas from folders of surface models and corresponding sparse landmarks. It selects a representative reference, aligns specimens, creates a mean surface, and derives index-consistent dense correspondences.
 
-BUILDER was originally adapted from the Dense Correspondence Landmarking (DeCAL) workflow in [SlicerDenseCorrespondenceAnalysis](https://github.com/SlicerMorph/SlicerDenseCorrespondenceAnalysis), developed by the SlicerMorph project. It substantially restructures and extends that workflow for ATLAS, including more robust model-landmark pairing, coordinate-system validation, mesh-quality safeguards, revised atlas construction, optional biharmonic deformation with TPS fallback, index-stable dense correspondence export, and direct integration with the DATABASE and PREDICT modules. See [BUILDER attribution and lineage](BUILDER/README.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
+The implementation was originally adapted from the Dense Correspondence Landmarking (DeCAL) workflow in [SlicerDenseCorrespondenceAnalysis](https://github.com/SlicerMorph/SlicerDenseCorrespondenceAnalysis), developed by the SlicerMorph project. It substantially restructures and extends that workflow with robust model-landmark pairing, coordinate-system checks, mesh-quality safeguards, revised atlas construction, optional biharmonic deformation with thin-plate-spline fallback, and direct integration with the CoherentAtlas Library and Landmark Transfer modules. See [construction lineage](Docs/ConstructionLineage.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
 **Primary outputs**
 
@@ -77,50 +79,52 @@ BUILDER was originally adapted from the Dense Correspondence Landmarking (DeCAL)
 - `atlas_dense_correspondences.mrk.json`; and
 - specimen-level population correspondences.
 
-### DATABASE
+### Atlas Library
 
-Builds and stores a PCA statistical shape model from dense population correspondences. DATABASE validates point consistency, computes the retained shape basis, saves the model, and provides interactive principal-component visualization in Slicer.
+Creates and manages reusable statistical shape model libraries from dense population correspondences. It validates point consistency, computes a retained PCA basis, stores the model and associated atlas assets, and provides interactive principal-component visualization in Slicer.
 
 **Primary outputs**
 
 - `manifest.json`;
 - `ssm_model.npz`; and
-- the associated template model and markup files.
+- the associated template surface and sparse/dense markup files.
 
-### PREDICT
+### Landmark Transfer
 
-Transfers template landmarks to target surface models in single or batch mode. The registration pipeline combines point-cloud subsampling, FPFH features, RANSAC and ICP rigid alignment, PCA-guided Coherent Point Drift, optional fine deformation, and optional surface projection.
+Transfers template landmarks to target surfaces in single or batch mode. The registration pipeline combines point-cloud subsampling, FPFH features, RANSAC and ICP rigid alignment, PCA-guided Coherent Point Drift, optional fine deformation, and optional surface projection.
 
-PREDICT also provides two target-specific template-optimization backends:
+Two target-specific template-optimization backends are available:
 
-- **FPFH + RANSAC**, the default feature-based SSM search; and
+- **FPFH + RANSAC**, the established default; and
 - **Pose-marginalized EM**, an experimental initializer that evaluates global pose hypotheses while jointly refining SSM shape and similarity pose.
 
-**Primary outputs**
+The module installs missing `tiny3d` and `biocpd` dependencies through Slicer's supported `slicer.util.pip_install` interface after explicit user approval.
 
-- predicted landmark `.mrk.json` files;
-- warped template models;
-- projected landmark refinements; and
-- optional batch mesh exports.
+### Surface Fragmentation
 
-### SEGMENTATION
+Generates corresponding surface fragments across specimens using dense correspondence trajectories, multiscale geometric features, neighborhood graphs, and spectral clustering. It exports labeled surface models and a label lookup table. “Fragmentation” here means partitioning surfaces into corresponding labeled regions; it does not imply damaged or disconnected input meshes.
 
-Segments homologous anatomical regions across meshes using dense correspondence trajectories and graph-based clustering. It exports labeled surface models and a label lookup table.
+## Related 3D Slicer extensions
+
+- **SlicerMorph** provides a broad ecosystem for geometric morphometrics, landmark management, GPA, ALPACA/MALPACA, visualization, and related workflows. CoherentAtlas complements it with population-atlas construction, SSM-constrained registration, and reusable atlas libraries.
+- **SlicerDenseCorrespondenceAnalysis / DeCA** provides dense-correspondence and morphometric-analysis workflows. CoherentAtlas Construction is descended from and substantially extends the DeCAL atlas-construction workflow.
+- **ALPACA / MALPACA** provide automated landmark transfer through point-cloud registration and are useful alternatives when a statistical population-shape prior is not required.
+- General Slicer registration tools provide reusable rigid and deformable registration components, while CoherentAtlas organizes them into a morphometrics-specific population-atlas workflow.
+
+## Compatibility
+
+The rebrand changes Slicer module identifiers but intentionally preserves scientific data conventions and output schemas. Existing files such as `atlas_model.ply`, `atlas_dense_correspondences.mrk.json`, `ssm_model.npz`, and `manifest.json` remain valid and should continue to load.
 
 ## Python dependencies
 
-ATLAS uses Slicer-provided Python, VTK, NumPy, and SciPy. PREDICT additionally requires:
+CoherentAtlas uses Slicer-provided Python, VTK, NumPy, and SciPy. Landmark Transfer additionally requires:
 
 - [`tiny3d`](https://pypi.org/project/tiny3d/) for point-cloud processing and rigid registration; and
 - [`biocpd>=1.3`](https://pypi.org/project/biocpd/) for shape-model-guided deformable registration and pose initialization.
 
-When these packages are missing or incompatible, PREDICT asks for permission before installing or upgrading them through Slicer's Python environment. An internet connection is therefore required the first time those dependencies are installed.
-
-The Pose-marginalized EM backend is optional. The established FPFH + RANSAC template optimizer remains the default.
-
 ## Documentation and support
 
-- [ATLAS tutorial](tutorial/README.md)
+- [CoherentAtlas tutorial](tutorial/README.md)
 - [Issue tracker](https://github.com/agporto/SlicerATLAS/issues)
 - [3D Slicer documentation](https://slicer.readthedocs.io/)
 - [SlicerMorph tutorials](https://github.com/SlicerMorph/Tutorials)
@@ -128,31 +132,20 @@ The Pose-marginalized EM backend is optional. The established FPFH + RANSAC temp
 
 For errors, open **View > Error Log** in Slicer and include the relevant traceback and reproduction steps in the issue report.
 
-## Troubleshooting
-
-| Issue | Likely cause | Suggested action |
-|---|---|---|
-| Landmark count mismatch in BUILDER | Input landmark files contain inconsistent numbers of points | Standardize landmark counts and regenerate the affected files |
-| Subsampling produces no points | Point density is too low or model scales differ substantially | Increase **Point Density** or enable scaling |
-| Poor RANSAC alignment | Feature radii or distance threshold are too restrictive | Increase the normal/FPFH radii or RANSAC distance threshold |
-| PCA-CPD stops early | The loaded SSM does not match the template correspondence count | Rebuild or reload the matching database |
-| Projection overshoots the surface | Projection distance is too large | Reduce the maximum projection factor |
-| Batch cancellation is delayed | The current specimen is completing a long registration step | Allow the current step to finish or reduce RANSAC iterations |
-
 ## Citation
 
-Until the formal ATLAS publication is available, cite the software repository:
+Until the formal publication is available, cite the software repository:
 
 ```text
-Porto, A. ATLAS: Automated Template-based Landmark Alignment System.
+Porto, A. CoherentAtlas: Population-informed atlas construction and landmark transfer for 3D biological form.
 https://github.com/agporto/SlicerATLAS
 ```
 
-When using BUILDER, also cite the relevant SlicerDenseCorrespondenceAnalysis/DeCA software and publication. Please additionally cite the methods and software used by the relevant workflow, including 3D Slicer, SlicerMorph when used, and the `biocpd` or `tiny3d` documentation as appropriate.
+When using Atlas Construction, also cite the relevant SlicerDenseCorrespondenceAnalysis/DeCA software and publication. Cite 3D Slicer, SlicerMorph when used, and the `biocpd` or `tiny3d` methods as appropriate.
 
 ## License
 
-ATLAS is distributed under the [BSD 2-Clause License](LICENSE.txt). Portions of BUILDER were adapted from SlicerDenseCorrespondenceAnalysis under its BSD 2-Clause License; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+CoherentAtlas is distributed under the [BSD 2-Clause License](LICENSE.txt). Portions of Atlas Construction were adapted from SlicerDenseCorrespondenceAnalysis under its BSD 2-Clause License; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Maintainer
 

@@ -1,301 +1,164 @@
 <p align="center">
-<img src="../logo.png" alt="ATLAS logo" width='200' height='200'>
+  <img src="../logo.png" alt="CoherentAtlas logo" width="180">
 </p>
 
-# ATLAS: Scaling 3D morphometrics across biodiversity with atlas-based automated landmarking
+# CoherentAtlas tutorial
 
-`ATLAS` is a companion extension to SlicerMorph, focused on high‑fidelity, scalable generation and transfer of 3D anatomical landmarks and dense correspondences using atlas construction, Statistical Shape Models (SSMs), and PCA‑guided deformable registration.
+CoherentAtlas is a 3D Slicer extension for constructing population atlases, organizing reusable statistical shape model libraries, transferring landmarks to complete or partial targets, and generating corresponding surface fragments.
 
-## Overview
-`ATLAS` streamlines:
-* Building an atlas (mean model + dense correspondences) from meshes and sparse landmarks
-* Constructing and persisting PCA Statistical Shape Models for variation exploration
-* Single and batch automated landmark transfer with robust rigid + PCA‑CPD deformable alignment and optional surface projection
-* Continuous optimization of the template (pose + shape) before large batch runs
-* Segmentation of the 3D model into parts
+The modules appear under the **CoherentAtlas** category:
 
-## Module Descriptions
-Open ATLAS ⟶ BUILDER.
-You should observe the following screen:
+1. **Atlas Construction**
+2. **Atlas Library**
+3. **Landmark Transfer**
+4. **Surface Fragmentation**
 
-<p align="center">
-<img src="images/1.png" width = 600>
-</p>
+The scientific output filenames retain the established atlas conventions, so existing datasets and model libraries remain compatible.
 
-`ATLAS` organizes functionality into three scripted modules: `BUILDER`, `DATABASE`, and `PREDICT`.    
+## 1. Atlas Construction
 
-#### BUILDER   
-**Category**: Atlas & Correspondence Generation   
-**Purpose**: Align a set of meshes and sparse landmark sets; automatically pick a reference (closest to mean), similarity-align all specimens, generate a mean (atlas) surface, and derive dense correspondences via TPS warp + k‑d tree mapping. Optionally downsamples to produce a sparser, index‑stable subset.   
-**Key Outputs**: Timestamped output folder containing aligned meshes (alignedModels/*), aligned landmarks (alignedLMs/*), atlas files (atlas/atlas_model.ply, atlas/atlas_sparse_landmarks.mrk.json), and sampled dense set (atlas/atlas_dense_correspondences.mrk.json) plus per-specimen dense correspondences in population_correspondences/.   
-**Notable Features**: Robust base selection; flexible file stem resolution; index preservation during downsampling.   
+Atlas Construction aligns a folder of meshes and matching sparse landmark files, creates a mean atlas surface, and exports index-consistent dense correspondences.
 
-<p align="center">
-<img src="images/2.png" width = 600>
-</p>
+<p align="center"><img src="images/1.png" width="600"></p>
 
-#### DATABASE   
-**Category**: Statistical Shape Modeling   
-**Purpose**: Build a PCA SSM from a folder of dense correspondences; store as a lightweight on‑disk database with manifest; load into scene for interactive mode exploration.   
-**Workflow**: Ingest ⟶ validate consistent point counts ⟶ SVD (variance threshold) ⟶ save mean, modes, eigenvalues.   
-**Visualization**: Single-PC slider + spinbox; deforms mesh in real time using k‑NN interpolation (weights from inverse distance) between landmark displacements and all vertices.   
-**Outputs**: manifest.json, ssm_model.npz, copied template and markup files.   
+### Required inputs
 
-<p align="center">
-<img src="images/3.png" width = 600>
-</p>
+- **Model directory:** source surface models (`.ply`, `.stl`, `.obj`, `.vtk`, or `.vtp`)
+- **Landmark directory:** matching sparse landmark files (`.mrk.json`, `.json`, or `.fcsv`)
+- **Output directory:** destination for the timestamped workflow folder
 
-#### PREDICT   
-**Category**: Automated Landmark Transfer   
-**Purpose**: Transfer template sparse landmarks to a target mesh (single or batch) via multi-stage alignment: subsampling & FPFH features ⟶ RANSAC + ICP rigid alignment ⟶ PCA‑guided Coherent Point Drift (CPD) deformable registration ⟶ optional surface projection refinement. Batch mode can also optionally export the warped template mesh for each target.   
-**Modes**:
-  * Single specimen alignment (tune parameters, inspect intermediate clouds/models)
-  * Batch processing (reuse tuned parameters; cancellation + progress)
-  * Template optimization (continuous search in SSM space + RANSAC scoring to refine initial template pose/shape)   
+### Important options
 
-**Outputs**: Predicted landmark .mrk.json files, warped template models (scene), optionally refined projected landmarks, and optional batch warped mesh exports as .vtp files.   
+- **Create atlas from inputs / Load existing atlas:** choose whether the workflow estimates a new reference or reuses an existing one.
+- **Normalize scale:** enables similarity rather than rigid-only alignment.
+- **Coordinate-system override:** bypasses the landmark/mesh orientation safeguard only when the data are known to be correct.
+- **Warp method:** thin-plate spline is the established default; biharmonic deformation is optional and can fall back to TPS.
+- **Sampling radius:** controls the number of dense correspondence points retained from the atlas surface.
 
-<p align="center">
-<img src="images/4.png" width = 600>
-</p>
+<p align="center"><img src="images/6.png" width="600"></p>
 
-## BUILDER
-Now that we are acquainted with the overall layout of ATLAS, let's start by building a mean (atlas) surface and landmarks (sparse and dense).
+Run the construction pipeline. The output contains:
 
-### Step 1. Download sample data
-Download the ATLAS sample dataset from [here](https://github.com/SlicerMorph/Mouse_Models)*. Click `Code` at the upper right corner then `Download Zip`. Extract all the files to a local directory. Return to 3D Slicer, go to the `ATLAS` module, then to `BUILDER`. * *Note: Pending pull request to fix broken mesh, FVB_NJ.ply. Otherwise, download data and delete broken mesh manually or repair using Slicer Surface Toolkit.*
+```text
+alignedModels/
+alignedLMs/
+atlas/atlas_model.ply
+atlas/atlas_sparse_landmarks.mrk.json
+atlas/atlas_dense_correspondences.mrk.json
+population_correspondences/
+```
 
-### Step 2. Populate `Required Inputs`
-Set `Model directory` with source models (.ply format), `Landmark directory` with source landmarks (.mrk.json format), and `Output directory`. In `Output directory`, a timestamped folder will be made containing aligned meshes (alignedModels/*), aligned landmarks (alignedLMs/*), dense correspondences/semilandmarks (population_correspondences/*), and atlas files (atlas/atlas_model.ply, atlas/atlas_sparse_landmarks.mrk.json, atlas/atlas_dense_correspondences.mrk.json).
+<p align="center"><img src="images/8.png" width="600"></p>
 
-<p align="center">
-<img src="images/5.png" width = 600>
-</p>
+## 2. Atlas Library
 
-### Step 3. Specify `Advanced Options` for atlas and dense correspondences generation.   
-* **Normalize scale**: Defaults to True. Normalizes the scale of specimens and landmarks.
-* **Override landmark ⟷ mesh coordinate check**: Defaults to False. Checks that meshes and landmarks are in the same coordinate system (ex: RAS). 
-* **Warp method**: Defaults to TPS (recommended). Warp using thin plate splines (TPS; more smooth and flexible) or biharmonic (more rigid). 
-  * * **Auto-fallback to TPS if biharmonic fails**: Defaults to True.
-* **Sampling radius (% of diag)**: Choose a value that will produce 2000 - 4000 expected dense correspondence points. 
-* **Expected points**: Adjust `Sampling radius` and click `Preview Point Count` until desired count is achieved.
+Atlas Library creates and manages reusable PCA statistical shape model packages from the dense correspondence files generated by Atlas Construction.
 
-<p align="center">
-<img src="images/6.png" width = 600>
-</p>
+<p align="center"><img src="images/3.png" width="600"></p>
 
-### Step 4. Under `Run + Status`, Click `Run BUILDER Pipeline`.
-Progress will be reported in the window below `Run BUILDER Pipeline` and a model with landmarks should appear in the 3D viewer.
+### Create a library entry
 
-<p align="center">
-<img src="images/7.png" width = 600>
-</p>
+Choose a library location and provide:
 
-<p align="center">
-<img src="images/6a.png" width = 600>
-</p>
+- **Template model:** `atlas/atlas_model.ply`
+- **Dense correspondences:** `atlas/atlas_dense_correspondences.mrk.json`
+- **Sparse landmarks:** `atlas/atlas_sparse_landmarks.mrk.json`
+- **Population correspondences folder:** `population_correspondences/`
+- **Library entry name:** a descriptive name for the population model
 
-If everything worked, you will see something indicating saved outputs and their locations.
+The module validates point consistency, estimates the retained PCA basis, and writes:
 
-<p align="center">
-<img src="images/8.png" width = 600>
-</p>
+```text
+manifest.json
+ssm_model.npz
+template_model.*
+dense_correspondences.*
+sparse_landmarks.*
+```
 
-## DATABASE
-Use atlas and dense correspondences from `BUILDER` to make a PCA-based statistical shape model (SSM) database. 
+<p align="center"><img src="images/9.png" width="600"></p>
 
-### Step 1. `Database Library`: Specify `Database location` output from `BUILDER`.
-For example: atlas_out/YYYY_MM-DD_HH_MM_SS 
+Select the new entry and click **Load Selected Database**. The template surface, dense correspondences, sparse landmarks, and SSM table are loaded into the Slicer scene.
 
-<p align="center">
-<img src="images/8a.png" width = 600>
-</p>
+Use the **SSM Explorer** principal-component controls to inspect population variation around the loaded template.
 
-### Step 2. `Ingest New SSM`: Select corresponding files and folders found within `Database location` above.
-* **Template Model**: atlas/atlas_model.ply
-* **Dense Correspondences**: atlas/atlas_dense_correspondences.mrk.json 
-* **Sparse Landmarks**: atlas/atlas_sparse_landmarks.mrk.json 
-* **Population Correspondences Folder**: population_correspondences/* 
-* **New Database Name**: your database name (ex: mouse_db)
+<p align="center"><img src="images/12.png" width="600"></p>
 
-<p align="center">
-<img src="images/9.png" width = 600>
-</p>
+## 3. Landmark Transfer
 
-Click `Ingest into Database`
+Landmark Transfer adapts the loaded population atlas to a target surface and propagates template landmarks to that specimen.
 
-### Step 3. `Database library`: Load database into ATLAS.
-Under `Database Library`, your new database should appear. Select your new database and click `Load Selected Database`.
+<p align="center"><img src="images/4.png" width="600"></p>
 
-<p align="center">
-<img src="images/10.png" width = 600>
-</p>
+### Prepare the scene
 
-### Step 4. `SSM Explorer (Template-Centered)`: Explore SSM changes through principal component space. 
-The form fields under `SSM Explorer (Template-Centered) will automatically populate and your atlas model and landmarks will open in the 3D viewer. 
+Load an Atlas Library entry, then select:
 
-<p align="center">
-<img src="images/11.png" width = 600>
-</p>
+- template model;
+- template dense correspondences;
+- template sparse landmarks;
+- target surface model; and
+- SSM data table.
 
-Adjust positions on PC sliders to visualize morphological change across &plusmn;SD's for each principal component.
+### Standard single-target workflow
 
-<p align="center">
-<img src="images/12.png" width = 600>
-</p>
+1. **Subsample source and target** to create point-cloud representations.
+2. **Run rigid alignment** using FPFH, RANSAC, and ICP.
+3. **Run deformable alignment** using statistical-shape-model-guided Coherent Point Drift and optional fine deformation.
+4. **Project landmarks** to the target surface when projection is enabled.
+5. **Inspect and save** the transferred landmarks and warped template.
 
-<p align="center">
-<img src="images/13.png" width = 600>
-</p>
+<p align="center"><img src="images/20.png" width="600"></p>
 
+### Template optimization
 
-## PREDICT
-Use the SSM database from `DATABASE` to predict landmark positions on new specimens. 
+Two target-specific initialization backends are available:
 
-### Step 1. `Prepare`: Ensure SSM is loaded.
-Follow [`DATABASE` ⟶ Step 3 above](https://github.com/aubricot/ATLAS-seg/tree/tutorial/tutorial#step-3-database-library-load-database-into-atlas).
+- **FPFH + RANSAC:** the established default feature-based SSM search.
+- **Pose-marginalized EM:** an experimental method that evaluates global pose hypotheses while jointly refining statistical shape coefficients and similarity pose.
 
-### Step 2. `Single Run`: Run landmark prediction for a single target mesh.
-* **Template Model**: <your_ssm>_template
-* **Template Correspondences**: <your_ssm>_template_correspondences 
-* **Template Landmarks**: <your_ssm>_template_sparse_landmarks
-* **Target model**: Choose a model to predict landmarks for
-* **SSM Data Table**: ssm_data_<your_ssm>
+Pose-EM does not replace the standard downstream registration stages. After initialization, Landmark Transfer still runs the normal rigid and deformable alignment workflow.
 
-Load a model to predict landmarks for into your Scene using the 3D Slicer Add Data button. 
-<p align="center">
-<img src="images/13a.png" width = 600>
-</p>
+For partial targets, set **Target completeness** carefully and inspect the ambiguity diagnostics. Partial or approximately symmetric structures may support multiple plausible poses.
 
-Ensure all form fields are correctly filled.
-  
-<p align="center">
-<img src="images/14.png" width = 600>
-</p>
-   
-1) Subsample source/target.   
-Downsample source and target point clouds based on value set in Advanced ⟶ Point density and max projection ⟶ Point Density.
-   
-<p align="center">
-<img src="images/15.png" width = 600>
-</p>
-   
-2) Run rigid alignment.   
-Global (RANSAC) and rigid (ICP) registration that register the source point cloud to the target.
-   
-<p align="center">
-<img src="images/16.png" width = 600>
-</p>
-   
-2) b. Preview Rigid Alignment.   
-   
-<p align="center">
-<img src="images/17.png" width = 600>
-</p>
-   
-3) Run deformable alignment.   
-Registration where source point cloud is deformed to target point cloud, then the registration is used to propagate the source landmarks to target specimen. Uses atlas/SSM as biological prior to avoid biologically implausible deformations (bioCPD) followed by CPD (coherent point drift) to capture local details. 
+### Batch transfer
 
-<p align="center">
-<img src="images/18.png" width = 600>
-</p>
+After tuning parameters on representative targets, use batch mode to apply the same workflow to a folder of specimens. Outputs include landmark markup files, optional warped surfaces, and diagnostic information.
 
-4) Show final registration.
-   
-<p align="center">
-<img src="images/19.png" width = 600>
-</p>
-   
-### Step 3. Display and evaluate ATLAS results.
-All results are saved in the PREDICT runs folder that can be viewed in the 3D Slicer Data module. Rotate and inspect results (meshes, pointclouds, landmarks) to ensure the alignment and landmark prediction behaviors are as expected.
+## 4. Surface Fragmentation
 
-By default, only the Warped Source model (green), Target Model (blue), and the final ATLAS Refined Predicted Landmarks are displayed.
+Surface Fragmentation divides corresponding surfaces into population-consistent labeled fragments using dense correspondence trajectories, geometric features, neighborhood graphs, and spectral clustering.
 
-<p align="center">
-<img src="images/20.png" width = 600>
-</p>
+### Inputs
 
-To display the Landmark Predictions (pink) versus the Refined Predicted Landmarks (pink), change the color of the Refined Predicted Landmarks to blue. Then, toggle the visibility (eyeball button) to on.
+- folder of paired surface models;
+- folder of corresponding dense `.mrk.json` files; and
+- output folder.
 
-<p align="center">
-<img src="images/21.png" width = 600>
-</p>
+### Parameters
 
-To display the rigidly registered Source Pointcloud (red) and Target Pointcloud (blue), toggle the visibility (eyeball button) to on and turn off any other visible nodes.
+- **Number of fragments:** requested cluster count.
+- **Neighborhood size:** local graph connectivity among correspondence loci.
+- **Feature/spatial weight:** balance between geometric similarity and spatial continuity.
+- **Auto-tune:** optionally searches candidate fragment counts and feature/spatial weights.
+- **Smoothing iterations:** regularizes labels across neighboring mesh vertices.
 
-<p align="center">
-<img src="images/22.png" width = 600>
-</p>
+The output surfaces contain fragment labels and are accompanied by a lookup table. Fragmentation means a labeled partition of the surface; it does not require physically disconnected or damaged input meshes.
 
-### Step 4. (Optional): Fine tune landmark prediction parameters and repeat Steps 2-3 until desired results are achieved. 
-These steps are especially important for macroevolutionary comparative analyses that may deviate from the original SSM.
+## Existing data compatibility
 
-### Step 4a. (Optional): `Template Optimization`: Optimize template for Target model to improve landmark transfer prediction.
-* **Template Model**: <your_ssm>_template
-* **Template Correspondences**: <your_ssm>_template_correspondences 
-* **Template Landmarks**: <your_ssm>_template_sparse_landmarks
-* **Target model**: Choose a model to predict landmarks for
-* **SSM Data Table**: ssm_data_<your_ssm>
-* **Optimization backend**:
-  * **FPFH + RANSAC (current)** preserves the established feature-based template search and remains the default.
-  * **Pose-marginalized EM (experimental)** evaluates deterministic global rotations and jointly refines SSM coefficients and similarity pose to select a target-informed template shape.
+CoherentAtlas preserves the established output and library schemas. Files created with the earlier ATLAS branding—such as `atlas_model.ply`, `atlas_dense_correspondences.mrk.json`, `ssm_model.npz`, and `manifest.json`—remain valid inputs.
 
-The current backend will either produce an optimized template or retain the baseline when it is already a good fit. The experimental backend applies the selected SSM shape in the original template frame and reports score margin, effective pose count, and evaluated/refined hypothesis counts. Pose-EM does not bypass any downstream stage: Single Run and Batch still perform the standard prescaling, RANSAC + ICP rigid alignment, PCA-CPD, and optional fine deformation.
+## Troubleshooting
 
-Pose-EM settings use biocpd's real-data algorithmic configuration: an exact budget of 193 total pose hypotheses, trajectory scoring after eight coarse iterations with all 193 hypotheses retained, 12 finalists, full-source/1,600-target refinement for 30 iterations, and pose-specific SSM/outlier weights of 0.1/0.05. These pose-specific weights are independent of downstream PCA-CPD. PREDICT requests four pose workers while locally limiting supported BLAS libraries to one native thread; unsupported BLAS backends fall back to one worker for cross-platform safety. The initializer's already-refined coefficients are applied directly in the template frame, without a second dense completion. For incomplete targets, `Target completeness` prescales the SSM and fixes initializer scale; inspect ambiguity diagnostics carefully because partial or symmetric anatomy may support several poses.
+| Issue | Likely cause | Suggested action |
+|---|---|---|
+| Models and landmarks do not pair | Filename stems do not match | Rename files so each model and landmark set shares a stem |
+| Coordinate-system warning | Meshes and landmarks may use different conventions | Verify RAS/LPS orientation before using the override |
+| Dense sampling returns no points | Sampling radius is too large | Reduce the sampling radius and preview again |
+| Rigid alignment is poor | Feature radii or distance thresholds are too restrictive | Increase the FPFH or RANSAC thresholds gradually |
+| PCA-CPD stops early | The SSM and template correspondence counts differ | Reload the matching Atlas Library entry |
+| Projection overshoots | Maximum projection distance is too large | Reduce the projection factor |
+| Fragment labels are noisy | Neighborhood or smoothing is too weak | Increase neighborhood size or smoothing iterations |
 
-<p align="center">
-<img src="images/23.png" width = 600>
-</p>
-
-### Step 4b. (Optional): `Advanced`: Adjust advanced parameters. 
-`General Settings`
-* **Skip scaling**:  Disables size normalization between template and target
-* **Skip projection**: Skips final surface snap of landmarks
-* **Skip template optimization (batch)**: Uses same template for all targets (faster)
-* **Target completeness (linear fraction)**: Fraction of specimen intact (0.5 = 50% complete)
-
-`Point density and max projection`
-* **Point Density**: Higher = more points, slower. Default 1.3
-* **Max projection factor (%)**: Max distance landmarks move to surface (% of size)
-
-`Rigid registration`
-* **Normal search radius**: Radius for surface normal estimation. Higher = smoother
-* **FPFH search radius**: Feature descriptor neighborhood size. Higher = more robust
-* **RANSAC distance threshold**: Max distance for point match. Higher = more tolerant
-* **Max RANSAC iterations**: Max attempts to find alignment. Default 400k
-* **RANSAC confidence**: Probability of finding good match. Default 0.999
-* **ICP distance threshold**: Refinement tolerance after RANSAC. Default 0.4
-
-`Deformation backend`
-* **Experimental: Use biharmonic surface warp**: Experimental alternative to TPS (less stable) 
-* **Biharmonic stiffness (lambda)**: Constraint strength for biharmonic warp
-* **TPS smoothing (λ)**: Regularization. 0=exact fit, higher=smoother approximation
-* **TPS max constraints**: Max correspondences used. Higher=detail but slower
-
-`PCA-CPD registration`
-* **Rigidity (alpha)**: Smoothness. Higher = stiffer, more global deformation
-* **Motion coherence (beta)**: Spatial correlation width. Higher = smoother coupling
-* **Fossil mode (SSM-only)**: Skip free-form stage for incomplete specimens
-* **Outlier weight (w)**: Expected outlier fraction. Higher for partial data
-* **Tolerance**: Convergence threshold. Lower = more precise, slower
-* **Max iterations**: Iteration limit for CPD. Default 250
-* **SSM weight (lambda_reg)**: SSM constraint strength. Higher = closer to mean
-
-### Step 5. `Batch`: Run landmark prediction for a directory of target meshes. 
-Use defaults or parameters chosen under `Template Optimization` and `Advanced` to run landmark prediction in batch mode.
-
-* **Source mesh**: the database template, `GridRANSAC_TemplateModel`, or `PoseEM_TemplateModel`
-* **Source Correspondences**: the matching template correspondence node
-* **Source landmarks**: the matching template landmark node
-* **Target mesh directory**: folder with your meshes to be landmarked
-* **Target output landmark directory**: your output landmark directory name (ex: predictedLMs)
-* **Save warped meshes**: Defaults to False. Saves warped meshes used for landmark transfer.
-* **Warped mesh output directory**: If saving warped meshes, specify your warped mesh output landmark directory name (ex: warpedMeshes)
-* **Smooth exported warped meshes**: Defaults to False. If saving warped meshes, specify to smooth them.
-* **SSM Data Table**: ssm_data_<your_ssm>
-* **Skip template optimization**: Defaults to False. Skips the backend selected in the Template Optimization tab. Both backends feed the same downstream scaling, rigid, and deformable pipeline. Pose-EM batch diagnostics are saved as `pose_em_diagnostics.json` in the landmark output directory.
-
-<p align="center">
-<img src="images/24.png" width = 600>
-</p>
+For unexpected errors, open **View > Error Log** in Slicer and include the traceback and reproduction steps in a GitHub issue.

@@ -7,10 +7,14 @@ _RESOURCE_DIR = Path(__file__).resolve().parent / "Resources" / "Python"
 if str(_RESOURCE_DIR) not in sys.path:
     sys.path.insert(0, str(_RESOURCE_DIR))
 
-from LegacyDatabase import DATABASE, DATABASELogic, DATABASEWidget
+from LibraryImplementation import (
+    DATABASE as _LibraryModuleBase,
+    DATABASELogic as _LibraryLogicBase,
+    DATABASEWidget as _LibraryWidgetBase,
+)
 
 
-class CoherentAtlasLibrary(DATABASE):
+class CoherentAtlasLibrary(_LibraryModuleBase):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent.title = "Atlas Library"
@@ -21,11 +25,11 @@ class CoherentAtlasLibrary(DATABASE):
         ) + self.getDefaultModuleDocumentationLink()
 
 
-class CoherentAtlasLibraryWidget(DATABASEWidget):
+class CoherentAtlasLibraryWidget(_LibraryWidgetBase):
     pass
 
 
-class CoherentAtlasLibraryLogic(DATABASELogic):
+class CoherentAtlasLibraryLogic(_LibraryLogicBase):
     pass
 
 

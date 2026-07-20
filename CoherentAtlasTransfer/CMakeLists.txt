@@ -7,8 +7,9 @@ set(MODULE_PYTHON_SCRIPTS
 
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
-  Resources/Python/LegacyPredict.py
+  Resources/Python/TransferImplementation.py
   Resources/Python/PoseEMTemplate.py
+  Resources/Python/__init__.py
   )
 
 slicerMacroBuildScriptedModule(
@@ -20,4 +21,5 @@ slicerMacroBuildScriptedModule(
 
 if(BUILD_TESTING)
   slicer_add_python_unittest(SCRIPT ${MODULE_NAME}.py)
+  slicer_add_python_unittest(SCRIPT Testing/Python/PoseEMInitializationTest.py)
 endif()

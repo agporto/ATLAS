@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="ATLAS logo" width="460">
+  <img src="logo.png" alt="MorphoWeave logo" width="460">
 </p>
 
 <h1 align="center">MorphoWeave</h1>

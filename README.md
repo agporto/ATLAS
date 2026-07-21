@@ -139,6 +139,20 @@ For errors, open **View > Error Log** in Slicer and include the relevant traceba
 | Projection overshoots the surface | Projection distance is too large | Reduce the maximum projection factor |
 | Batch cancellation is delayed | The current specimen is completing a long registration step | Allow the current step to finish or reduce RANSAC iterations |
 
+## Funding
+
+<p align="center">
+  <a href="https://www.nsf.gov/awardsearch/showAward?AWD_ID=2422839">
+    <img src="Docs/Images/nsf-logo.png" alt="U.S. National Science Foundation logo" width="150">
+  </a>
+</p>
+
+This material is based upon work supported by the U.S. National Science Foundation under Award No. [2422839](https://www.nsf.gov/awardsearch/showAward?AWD_ID=2422839).
+
+This work was supported in part by the University of Florida Artificial Intelligence and Informatics Research Institute ([AIIRI](https://ai.research.ufl.edu/)).
+
+Any opinions, findings, conclusions or recommendations expressed in this material are those of the authors and do not necessarily reflect the views of the U.S. National Science Foundation.
+
 ## Citation
 
 Until the formal MorphoWeave publication is available, cite the software repository:

@@ -1,6 +1,7 @@
 import os
 import time
 import html
+import tempfile
 from datetime import datetime
 from pathlib import Path
 import numpy as np
@@ -108,6 +109,14 @@ class MorphoWeaveAtlasBuilderWidget(ScriptedLoadableModuleWidget):
     # Override LM on surface check
     self.overrideCoordCheck = qt.QCheckBox("Override landmark↔mesh coordinate check"); self.overrideCoordCheck.setChecked(False)
     advLay.addRow(self.overrideCoordCheck)
+
+    self.keepAlignedOutputs = qt.QCheckBox("Keep aligned models and landmarks")
+    self.keepAlignedOutputs.setChecked(True)
+    self.keepAlignedOutputs.setToolTip(
+      "Keep transformed copies in alignedModels/ and alignedLMs/. "
+      "Original input files are never copied or modified."
+    )
+    advLay.addRow(self.keepAlignedOutputs)
 
     # Warp method (NEW)
     self.warpMethod = qt.QComboBox()
@@ -266,12 +275,15 @@ class MorphoWeaveAtlasBuilderWidget(ScriptedLoadableModuleWidget):
     except Exception:
       self._status("Failed to load atlas model/landmarks."); return None, None
 
-  def _outFolders(self, base):
+  def _outFolders(self, base, alignedRoot=None):
     ts = datetime.now().strftime('%Y_%m-%d_%H_%M_%S')
     root = os.path.join(base, ts); os.makedirs(root, exist_ok=True)
     d = {'output': root}
-    for k in ['alignedModels', 'alignedLMs', 'atlas', 'population_correspondences']:
+    for k in ['atlas', 'population_correspondences']:
       p = os.path.join(root, k); os.makedirs(p, exist_ok=True); d[k] = p
+    alignedBase = alignedRoot or root
+    for k in ['alignedModels', 'alignedLMs']:
+      p = os.path.join(alignedBase, k); os.makedirs(p, exist_ok=True); d[k] = p
     return d
 
   def _onRun(self):
@@ -289,70 +301,91 @@ class MorphoWeaveAtlasBuilderWidget(ScriptedLoadableModuleWidget):
           self._status("Run cancelled; the existing Model Library entry was not changed.")
           return
 
-    F = self._outFolders(self.outDir.currentPath)
-    F['originalModels'] = self.modelDir.currentPath
-    F['originalLMs']    = self.lmDir.currentPath
-    useSimilarity = self.useSimilarity.isChecked()
-    method = "biharmonic" if int(self.warpMethod.currentIndex) == 1 else "tps"
-    allowFallback = self.autoFallback.isChecked()
+    keepAlignedOutputs = self.keepAlignedOutputs.isChecked()
+    alignedWorkspace = None
+    try:
+      if not keepAlignedOutputs:
+        alignedWorkspace = tempfile.TemporaryDirectory(prefix="MorphoWeave-aligned-")
 
-    # 1) Get atlas (load or build)
-    if self.loadAtlasRadio.isChecked():
-      self._status("Loading atlas model and landmarks…")
-      atlasModel, atlasLMs = self._loadAtlas()
-      if not atlasModel or not atlasLMs:
-        return
-    else:
+      F = self._outFolders(
+        self.outDir.currentPath,
+        alignedRoot=alignedWorkspace.name if alignedWorkspace else None,
+      )
+      F['originalModels'] = self.modelDir.currentPath
+      F['originalLMs']    = self.lmDir.currentPath
+      useSimilarity = self.useSimilarity.isChecked()
+      method = "biharmonic" if int(self.warpMethod.currentIndex) == 1 else "tps"
+      allowFallback = self.autoFallback.isChecked()
+
+      # 1) Get atlas (load or build)
+      if self.loadAtlasRadio.isChecked():
+        self._status("Loading atlas model and landmarks…")
+        atlasModel, atlasLMs = self._loadAtlas()
+        if not atlasModel or not atlasLMs:
+          return
+      else:
+        try:
+          self._status("Generating atlas: finding closest-to-mean, pre-aligning, and averaging…")
+          atlasModel, atlasLMs = self._generateAtlas(F, useSimilarity, method, allowFallback)
+        except Exception as e:
+          self._status(f"Atlas generation failed: {e}"); return
+
+      # 2) Align all to atlas
       try:
-        self._status("Generating atlas: finding closest-to-mean, pre-aligning, and averaging…")
-        atlasModel, atlasLMs = self._generateAtlas(F, useSimilarity, method, allowFallback)
+        self._status("Aligning all specimens to the atlas…")
+        logic.runAlign(
+          atlasModel, atlasLMs,
+          F['originalModels'], F['originalLMs'],
+          F['alignedModels'],  F['alignedLMs'],
+          useSimilarity,
+          allowCoordMismatch=self.overrideCoordCheck.isChecked(),
+          progress=lambda i,n,s: self._status(f"[{i}/{n}] aligned {s}")
+        )
+      except ValueError as e:
+        self._status(str(e)); return
+
+      # 3) Save atlas + export dense
+      logic.saveAtlasOnly(atlasModel, atlasLMs, F['atlas'])
+      dense_ok = True
+      try:
+        self._status(f"Exporting dense correspondences using {method.upper()} projection…")
+        logic.exportDenseLMs(
+          atlasModel, atlasLMs,
+          F['alignedModels'], F['alignedLMs'],
+          F['population_correspondences'], F['atlas'],
+          self.spacing.value,
+          warp_method=method,
+          allow_fallback=allowFallback,
+          progress=lambda msg: self._status(msg)
+        )
       except Exception as e:
-        self._status(f"Atlas generation failed: {e}"); return
-
-    # 2) Align all to atlas
-    try:
-      self._status("Aligning all specimens to the atlas…")
-      logic.runAlign(
-        atlasModel, atlasLMs,
-        F['originalModels'], F['originalLMs'],
-        F['alignedModels'],  F['alignedLMs'],
-        useSimilarity,
-        allowCoordMismatch=self.overrideCoordCheck.isChecked(),
-        progress=lambda i,n,s: self._status(f"[{i}/{n}] aligned {s}")
-      )
-    except ValueError as e:
-      self._status(str(e)); return
-
-    # 3) Save atlas + export dense
-    logic.saveAtlasOnly(atlasModel, atlasLMs, F['atlas'])
-    dense_ok = True
-    try:
-      self._status(f"Exporting dense correspondences using {method.upper()} projection…")
-      logic.exportDenseLMs(
-        atlasModel, atlasLMs,
-        F['alignedModels'], F['alignedLMs'],
-        F['population_correspondences'], F['atlas'],
-        self.spacing.value,
-        warp_method=method,
-        allow_fallback=allowFallback,
-        progress=lambda msg: self._status(msg)
-      )
-    except Exception as e:
-      dense_ok = False
-      self._status(f"Dense export failed: {e}")
-    slicer.mrmlScene.RemoveNode(atlasModel); slicer.mrmlScene.RemoveNode(atlasLMs)
-    library_ok = None
-    if dense_ok and saveToLibrary:
-      library_ok = self._saveSsmToLibrary(F)
-    if dense_ok:
-      library_note = ""
-      if library_ok is True:
-        library_note = f" SSM saved to Model Library as '{self._libraryName()}'."
-      elif library_ok is False:
-        library_note = " Atlas outputs are complete, but the Model Library save failed."
-      self._status(f"Completed. Output: {F['output']} (atlas/, population_correspondences/, alignedModels/, alignedLMs/).{library_note}")
-    else:
-      self._status(f"Completed with warnings. Output: {F['output']} (atlas/, alignedModels/, alignedLMs/). Dense export did not finish.")
+        dense_ok = False
+        self._status(f"Dense export failed: {e}")
+      slicer.mrmlScene.RemoveNode(atlasModel); slicer.mrmlScene.RemoveNode(atlasLMs)
+      library_ok = None
+      if dense_ok and saveToLibrary:
+        library_ok = self._saveSsmToLibrary(F)
+      if dense_ok:
+        retainedFolders = ["atlas/", "population_correspondences/"]
+        if keepAlignedOutputs:
+          retainedFolders.extend(["alignedModels/", "alignedLMs/"])
+        library_note = ""
+        if library_ok is True:
+          library_note = f" SSM saved to Model Library as '{self._libraryName()}'."
+        elif library_ok is False:
+          library_note = " Atlas outputs are complete, but the Model Library save failed."
+        self._status(f"Completed. Output: {F['output']} ({', '.join(retainedFolders)}).{library_note}")
+      else:
+        retainedFolders = ["atlas/"]
+        if keepAlignedOutputs:
+          retainedFolders.extend(["alignedModels/", "alignedLMs/"])
+        self._status(
+          f"Completed with warnings. Output: {F['output']} ({', '.join(retainedFolders)}). "
+          "Dense export did not finish."
+        )
+    finally:
+      if alignedWorkspace is not None:
+        alignedWorkspace.cleanup()
 
   def _saveSsmToLibrary(self, F):
     try:

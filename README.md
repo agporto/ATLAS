@@ -5,6 +5,10 @@
 <p align="center"><strong>Weaving biological form into a common geometric language</strong></p>
 
 <p align="center">
+  <a href="Docs/Media/atlas_hero_16x9.mp4"><strong>Watch MorphoWeave in action (MP4)</strong></a>
+</p>
+
+<p align="center">
   A 3D Slicer extension for anatomical atlas construction, statistical shape modeling, biology-guided deformable registration, and automated landmark transfer.
 </p>
 
@@ -63,11 +67,13 @@ Constructs an anatomical atlas from folders of surface models and corresponding 
 
 Enable **Save SSM to Model Library** to ingest successful atlas outputs directly into the configured library. Enter a safe model name; Atlas Builder displays the destination from `MorphoWeaveModelLibrary/databasePath` (by default `Documents/MorphoWeaveModels`) and asks before writing to an existing entry. Auto-save runs only after dense correspondence export succeeds.
 
+**Keep aligned models and landmarks** is enabled by default. Disable it when only the atlas and population correspondences are needed; MorphoWeave still creates the aligned derivatives in a temporary workspace for processing and removes them afterward. Original input meshes and landmarks are never copied or modified.
+
 Atlas Builder was originally adapted from the Dense Correspondence Landmarking (DeCAL) workflow in [SlicerDenseCorrespondenceAnalysis](https://github.com/SlicerMorph/SlicerDenseCorrespondenceAnalysis), developed by the SlicerMorph project. It substantially restructures and extends that workflow for MorphoWeave, including more robust model-landmark pairing, coordinate-system validation, mesh-quality safeguards, revised atlas construction, optional biharmonic deformation with TPS fallback, index-stable dense correspondence export, and direct integration with the Model Library and Landmark Transfer modules. See [Atlas Builder attribution and lineage](MorphoWeaveAtlasBuilder/README.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
 **Primary outputs**
 
-- aligned models and landmarks;
+- aligned models and landmarks, when retained;
 - `atlas_model.ply`;
 - `atlas_sparse_landmarks.mrk.json`;
 - `atlas_dense_correspondences.mrk.json`; and
@@ -137,6 +143,7 @@ For errors, open **View > Error Log** in Slicer and include the relevant traceba
 ### 3D Slicer smoke-test checklist
 
 - [ ] Run Atlas Builder with Model Library save disabled, then enabled with a new valid name.
+- [ ] Run Atlas Builder with aligned-output retention enabled and disabled; confirm input files remain untouched and disabled runs omit `alignedModels/` and `alignedLMs/`.
 - [ ] Decline and accept the overwrite prompt for an existing library entry; verify dense-export failure never triggers ingest.
 - [ ] Exercise **Needs input**, **Ready**, **Optional**, and **Complete** states across all four modules and confirm their accessible names include the state.
 - [ ] Load multiple canonical SSM sets, re-enter Landmark Transfer, and verify the latest complete point-count-compatible quartet fills only empty selectors.

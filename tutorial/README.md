@@ -23,7 +23,7 @@ You should observe the following screen:
 #### Atlas Builder
 **Category**: Atlas & Correspondence Generation
 **Purpose**: Align a set of meshes and sparse landmark sets; automatically pick a reference (closest to mean), similarity-align all specimens, generate a mean (atlas) surface, and derive dense correspondences via TPS warp + k‑d tree mapping. Optionally downsamples to produce a sparser, index‑stable subset.
-**Key Outputs**: Timestamped output folder containing aligned meshes (alignedModels/*), aligned landmarks (alignedLMs/*), atlas files (atlas/atlas_model.ply, atlas/atlas_sparse_landmarks.mrk.json), and sampled dense set (atlas/atlas_dense_correspondences.mrk.json) plus per-specimen dense correspondences in population_correspondences/.
+**Key Outputs**: Timestamped output folder containing atlas files (atlas/atlas_model.ply, atlas/atlas_sparse_landmarks.mrk.json), sampled dense set (atlas/atlas_dense_correspondences.mrk.json), per-specimen dense correspondences in population_correspondences/, and optionally retained aligned meshes (alignedModels/*) and landmarks (alignedLMs/*).
 **Notable Features**: Robust base selection; flexible file stem resolution; index preservation during downsampling.
 
 <p align="center">
@@ -67,7 +67,7 @@ Now that we are acquainted with the overall layout of MorphoWeave, let's start b
 Download the MorphoWeave sample dataset from [here](https://github.com/SlicerMorph/Mouse_Models)*. Click `Code` at the upper right corner then `Download Zip`. Extract all the files to a local directory. Return to 3D Slicer, go to the `MorphoWeave` category, then to `Atlas Builder`. * *Note: Pending pull request to fix broken mesh, FVB_NJ.ply. Otherwise, download data and delete the broken mesh manually or repair it using Slicer's Surface Toolbox.*
 
 ### Step 2. Populate `Required Inputs`
-Set `Model directory` with source models (.ply format), `Landmark directory` with source landmarks (.mrk.json format), and `Output directory`. In `Output directory`, a timestamped folder will be made containing aligned meshes (alignedModels/*), aligned landmarks (alignedLMs/*), dense correspondences/semilandmarks (population_correspondences/*), and atlas files (atlas/atlas_model.ply, atlas/atlas_sparse_landmarks.mrk.json, atlas/atlas_dense_correspondences.mrk.json).
+Set `Model directory` with source models (.ply format), `Landmark directory` with source landmarks (.mrk.json format), and `Output directory`. In `Output directory`, a timestamped folder will be made containing dense correspondences/semilandmarks (population_correspondences/*), atlas files (atlas/atlas_model.ply, atlas/atlas_sparse_landmarks.mrk.json, atlas/atlas_dense_correspondences.mrk.json), and—when retained—aligned meshes (alignedModels/*) and aligned landmarks (alignedLMs/*). Original input files are never copied or modified.
 
 Optionally expand `Optional Model Library Save`, enable `Save SSM to Model Library`, and enter a model name. The displayed library location comes from the Model Library configuration (by default `Documents/MorphoWeaveModels`). If that name already exists, MorphoWeave asks for confirmation before the run; declining leaves the existing entry unchanged. The SSM is ingested only after atlas and dense correspondence export succeeds.
 
@@ -78,6 +78,7 @@ Optionally expand `Optional Model Library Save`, enable `Save SSM to Model Libra
 ### Step 3. Specify `Advanced Options` for atlas and dense correspondences generation.
 * **Normalize scale**: Defaults to True. Normalizes the scale of specimens and landmarks.
 * **Override landmark ⟷ mesh coordinate check**: Defaults to False. Checks that meshes and landmarks are in the same coordinate system (ex: RAS).
+* **Keep aligned models and landmarks**: Defaults to True. Retains transformed derivatives in alignedModels/* and alignedLMs/*. Disable it to use a temporary processing workspace and omit these folders from the final output.
 * **Warp method**: Defaults to TPS (recommended). Warp using thin plate splines (TPS; more smooth and flexible) or biharmonic (more rigid).
   * * **Auto-fallback to TPS if biharmonic fails**: Defaults to True.
 * **Sampling radius (% of diag)**: Choose a value that will produce 2000 - 4000 expected dense correspondence points.

@@ -5,10 +5,6 @@
 <p align="center"><strong>Weaving biological form into a common geometric language</strong></p>
 
 <p align="center">
-  <img src="Docs/Media/morphoweave.gif" alt="MorphoWeave statistical shape space animation" width="720">
-</p>
-
-<p align="center">
   A 3D Slicer extension for anatomical atlas construction, statistical shape modeling, biology-guided deformable registration, and automated landmark transfer.
 </p>
 
@@ -16,6 +12,12 @@
   <a href="tutorial/README.md"><strong>Tutorial</strong></a> ·
   <a href="https://github.com/agporto/SlicerMorphoWeave/issues"><strong>Issues</strong></a> ·
   <a href="https://discourse.slicer.org/"><strong>Slicer Forum</strong></a>
+  <a href="https://youtu.be/OA_bfRgbKGs"><strong>Video</strong></a>
+
+</p>
+
+<p align="center">
+  <img src="Docs/Media/morphoweave.gif" alt="MorphoWeave statistical shape space animation" width="720">
 </p>
 
 ## Overview

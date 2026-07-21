@@ -27,4 +27,5 @@ if(BUILD_TESTING)
   # Note that the test will also be available at runtime.
   slicer_add_python_unittest(SCRIPT ${MODULE_NAME}.py)
   slicer_add_python_unittest(SCRIPT Testing/Python/PoseEMTemplateTest.py)
+  slicer_add_python_unittest(SCRIPT Testing/Python/SSMSelectionTest.py)
 endif()

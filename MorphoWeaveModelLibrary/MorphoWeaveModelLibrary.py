@@ -1,4 +1,4 @@
-import os, json, shutil, logging
+import os, json, shutil, logging, html
 import numpy as np
 from pathlib import Path
 from vtk.util import numpy_support
@@ -9,6 +9,20 @@ from scipy.sparse.linalg import splu
 
 import slicer, qt, ctk, vtk
 from slicer.ScriptedLoadableModule import *
+
+
+def setWorkflowStatus(label, state, detail):
+  title, color = {
+    "needs_input": ("Needs input", "#c75b5b"),
+    "ready": ("Ready", "#4f9d69"),
+    "optional": ("Optional", "#c18b37"),
+    "complete": ("Complete", "#4f9d69"),
+  }[state]
+  safeDetail = html.escape(str(detail)).replace("\n", "<br>")
+  label.setTextFormat(qt.Qt.RichText)
+  label.setText(f'<span style="color:{color}; font-weight:600">{title}</span> — {safeDetail}')
+  label.setAccessibleName(f"{title}: {detail}")
+
 
 #
 # MorphoWeaveModelLibrary
@@ -310,13 +324,13 @@ class MorphoWeaveModelLibraryWidget(ScriptedLoadableModuleWidget):
     ingestLayout.addRow(self.ingestButton)
 
     # --- Visualization ---
-    explorerWidget = ctk.ctkCollapsibleButton(); explorerWidget.text = "3) SSM Explorer (Template-Centered)"
+    explorerWidget = ctk.ctkCollapsibleButton(); explorerWidget.text = "3) SSM Explorer"
     explorerWidget.collapsed = False
     explorerLayout = qt.QFormLayout(explorerWidget); self.layout.addWidget(explorerWidget)
     explorerLayout.setFieldGrowthPolicy(qt.QFormLayout.AllNonFixedFieldsGrow)
     explorerHelp = qt.QLabel(
-      "Template-centered exploration: PC sliders apply offsets around the loaded template correspondences.\n"
-      "Use this to inspect variation while preserving template alignment context."
+      "PC sliders apply offsets around the loaded template correspondences.\n"
+      "Use them to inspect variation while preserving the template alignment context."
     )
     explorerHelp.setWordWrap(True)
     explorerLayout.addRow(explorerHelp)
@@ -373,7 +387,7 @@ class MorphoWeaveModelLibraryWidget(ScriptedLoadableModuleWidget):
     explorerLayout.addRow(self.slidersArea)
 
     self.resetButton = qt.QPushButton("Reset Explorer PCs")
-    self.resetButton.toolTip = "Reset all sliders to zero and restore the loaded template-centered baseline."
+    self.resetButton.toolTip = "Reset all sliders to zero and restore the loaded template baseline."
     self.resetButton.enabled = False
     explorerLayout.addRow(self.resetButton)
 
@@ -403,6 +417,7 @@ class MorphoWeaveModelLibraryWidget(ScriptedLoadableModuleWidget):
     self.resetButton.connect('clicked(bool)', self.onResetAll)
 
     self.initializeDatabasePath()
+    self.onSelect()
     self.layout.addStretch(1)
 
   def cleanup(self):
@@ -545,9 +560,9 @@ class MorphoWeaveModelLibraryWidget(ScriptedLoadableModuleWidget):
     )
     self.ingestButton.enabled = ready
     if ready:
-      self.ingestStatusLabel.setText("Status: READY - ingest inputs are complete.")
+      setWorkflowStatus(self.ingestStatusLabel, "ready", "Ingest inputs are complete.")
     else:
-      self.ingestStatusLabel.setText("Status: BLOCKED - select template model, dense/sparse landmarks, and population folder.")
+      setWorkflowStatus(self.ingestStatusLabel, "needs_input", "Select template model, dense and sparse landmarks, and population folder.")
 
   def onIngestButton(self):
     populationDir = self.ssmPopulationDirSelector.currentPath

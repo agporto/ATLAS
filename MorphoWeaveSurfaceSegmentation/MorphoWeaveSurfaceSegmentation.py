@@ -1,10 +1,24 @@
-import os, json, logging, numpy as np
+import os, json, logging, html, numpy as np
 import vtk, qt, ctk, slicer, vtk.util.numpy_support as vtk_np
 from slicer.ScriptedLoadableModule import *
 from scipy.spatial import cKDTree
 from scipy.sparse import coo_matrix, diags
 from scipy.sparse.linalg import eigsh
 from scipy.cluster.vq import kmeans2
+
+
+def setWorkflowStatus(label, state, detail):
+  title, color = {
+    "needs_input": ("Needs input", "#c75b5b"),
+    "ready": ("Ready", "#4f9d69"),
+    "optional": ("Optional", "#c18b37"),
+    "complete": ("Complete", "#4f9d69"),
+  }[state]
+  safeDetail = html.escape(str(detail)).replace("\n", "<br>")
+  label.setTextFormat(qt.Qt.RichText)
+  label.setText(f'<span style="color:{color}; font-weight:600">{title}</span> — {safeDetail}')
+  label.setAccessibleName(f"{title}: {detail}")
+
 
 class MorphoWeaveSurfaceSegmentation(ScriptedLoadableModule):
   def __init__(self, parent):
@@ -80,7 +94,7 @@ class MorphoWeaveSurfaceSegmentationWidget(ScriptedLoadableModuleWidget):
     dOut=os.path.abspath(os.path.expanduser(self._t(self.outDir)))
     if not (os.path.isdir(dMeshes) and os.path.isdir(dMrk)):
       self.runBtn.enabled = False
-      self.statusLbl.setText("Status: BLOCKED - select valid mesh and markups folders.")
+      setWorkflowStatus(self.statusLbl, "needs_input", "Select valid mesh and correspondence folders.")
       return
     mesh_files = [f for f in os.listdir(dMeshes) if os.path.splitext(f)[1].lower() in {".ply",".stl",".obj",".vtp",".vtk"}]
     mrk_files = [f for f in os.listdir(dMrk) if f.lower().endswith(".mrk.json")]
@@ -90,11 +104,11 @@ class MorphoWeaveSurfaceSegmentationWidget(ScriptedLoadableModuleWidget):
     out_ok = bool(dOut)
     self.runBtn.enabled = pairs > 0 and out_ok
     if pairs == 0:
-      self.statusLbl.setText("Status: BLOCKED - no mesh/.mrk.json filename pairs found.")
+      setWorkflowStatus(self.statusLbl, "needs_input", "No matching mesh and .mrk.json filenames were found.")
     elif not out_ok:
-      self.statusLbl.setText("Status: BLOCKED - choose an output folder.")
+      setWorkflowStatus(self.statusLbl, "needs_input", "Choose an output folder.")
     else:
-      self.statusLbl.setText(f"Status: READY - {pairs} paired specimens detected.")
+      setWorkflowStatus(self.statusLbl, "ready", f"{pairs} paired specimens detected.")
 
   def onRun(self):
     dMeshes=os.path.abspath(os.path.expanduser(self._t(self.meshDir)))
@@ -132,7 +146,7 @@ class MorphoWeaveSurfaceSegmentationWidget(ScriptedLoadableModuleWidget):
       msg = f"Surface Segmentation: {res['n_pairs']} pairs, k={res['k']}, wrote={res['wrote']}"
       if 'Q' in res: msg += f", Q={res['Q']:.3f}"
       slicer.util.showStatusMessage(msg)
-      self.statusLbl.setText(f"Status: COMPLETED - last run completed successfully. Outputs written to: {dOut}")
+      setWorkflowStatus(self.statusLbl, "complete", f"Run finished. Outputs: {dOut}")
       logging.info(res)
 
 

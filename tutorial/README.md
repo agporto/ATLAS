@@ -69,6 +69,8 @@ Download the MorphoWeave sample dataset from [here](https://github.com/SlicerMor
 ### Step 2. Populate `Required Inputs`
 Set `Model directory` with source models (.ply format), `Landmark directory` with source landmarks (.mrk.json format), and `Output directory`. In `Output directory`, a timestamped folder will be made containing aligned meshes (alignedModels/*), aligned landmarks (alignedLMs/*), dense correspondences/semilandmarks (population_correspondences/*), and atlas files (atlas/atlas_model.ply, atlas/atlas_sparse_landmarks.mrk.json, atlas/atlas_dense_correspondences.mrk.json).
 
+Optionally expand `Optional Model Library Save`, enable `Save SSM to Model Library`, and enter a model name. The displayed library location comes from the Model Library configuration (by default `Documents/MorphoWeaveModels`). If that name already exists, MorphoWeave asks for confirmation before the run; declining leaves the existing entry unchanged. The SSM is ingested only after atlas and dense correspondence export succeeds.
+
 <p align="center">
 <img src="images/5.png" width = 600>
 </p>
@@ -105,8 +107,8 @@ If everything worked, you will see something indicating saved outputs and their 
 ## Model Library
 Use atlas and dense correspondences from `Atlas Builder` to make a PCA-based statistical shape model (SSM) database.
 
-### Step 1. `Database Library`: Specify `Database location` output from `Atlas Builder`.
-For example: atlas_out/YYYY_MM-DD_HH_MM_SS
+### Step 1. `Database Library`: Specify the persistent Model Library location.
+The default is `Documents/MorphoWeaveModels`. This is also the destination displayed by Atlas Builder's optional auto-save workflow.
 
 <p align="center">
 <img src="images/8a.png" width = 600>
@@ -132,8 +134,8 @@ Under `Database Library`, your new database should appear. Select your new datab
 <img src="images/10.png" width = 600>
 </p>
 
-### Step 4. `SSM Explorer (Template-Centered)`: Explore SSM changes through principal component space.
-The form fields under `SSM Explorer (Template-Centered) will automatically populate and your atlas model and landmarks will open in the 3D viewer.
+### Step 4. `SSM Explorer`: Explore SSM changes through principal component space.
+The form fields under `SSM Explorer` will automatically populate and your atlas model and landmarks will open in the 3D viewer.
 
 <p align="center">
 <img src="images/11.png" width = 600>
@@ -156,6 +158,8 @@ Use the SSM database from `Model Library` to predict landmark positions on new s
 ### Step 1. `Prepare`: Ensure SSM is loaded.
 Follow [`Model Library` ⟶ Step 3 above](#step-3-database-library-load-database-into-morphoweave).
 
+On setup and module re-entry, Landmark Transfer finds the most recently loaded complete canonical SSM set and fills only empty template, correspondence, landmark, and SSM table selectors in Single Run, Batch, and Template Optimization. It validates dense-point count against the SSM table. Existing manual selections and target models are never replaced by this resolver.
+
 ### Step 2. `Single Run`: Run landmark prediction for a single target mesh.
 * **Template Model**: <your_ssm>_template
 * **Template Correspondences**: <your_ssm>_template_correspondences
@@ -169,6 +173,8 @@ Load a model to predict landmarks for into your Scene using the 3D Slicer Add Da
 </p>
 
 Ensure all form fields are correctly filled.
+
+Workflow labels use compact **Needs input**, **Ready**, **Optional**, and **Complete** states with restrained color accents. Optimization backend settings remain collapsed when the backend changes. In Advanced Settings, **Rigid registration** and **Deformation backend** also start collapsed.
 
 <p align="center">
 <img src="images/14.png" width = 600>

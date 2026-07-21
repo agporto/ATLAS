@@ -61,6 +61,8 @@ A complete illustrated walkthrough is available in the [MorphoWeave tutorial](tu
 
 Constructs an anatomical atlas from folders of surface models and corresponding sparse landmarks. Atlas Builder selects a representative reference, aligns the specimens, generates a mean surface, and derives index-consistent dense correspondences.
 
+Enable **Save SSM to Model Library** to ingest successful atlas outputs directly into the configured library. Enter a safe model name; Atlas Builder displays the destination from `MorphoWeaveModelLibrary/databasePath` (by default `Documents/MorphoWeaveModels`) and asks before writing to an existing entry. Auto-save runs only after dense correspondence export succeeds.
+
 Atlas Builder was originally adapted from the Dense Correspondence Landmarking (DeCAL) workflow in [SlicerDenseCorrespondenceAnalysis](https://github.com/SlicerMorph/SlicerDenseCorrespondenceAnalysis), developed by the SlicerMorph project. It substantially restructures and extends that workflow for MorphoWeave, including more robust model-landmark pairing, coordinate-system validation, mesh-quality safeguards, revised atlas construction, optional biharmonic deformation with TPS fallback, index-stable dense correspondence export, and direct integration with the Model Library and Landmark Transfer modules. See [Atlas Builder attribution and lineage](MorphoWeaveAtlasBuilder/README.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
 **Primary outputs**
@@ -73,7 +75,7 @@ Atlas Builder was originally adapted from the Dense Correspondence Landmarking (
 
 ### Model Library
 
-Builds and stores a PCA statistical shape model from dense population correspondences. Model Library validates point consistency, computes the retained shape basis, saves the model, and provides interactive principal-component visualization in Slicer.
+Builds and stores a PCA statistical shape model from dense population correspondences. Model Library validates point consistency, computes the retained shape basis, saves the model, and provides interactive principal-component visualization through **SSM Explorer** in Slicer.
 
 **Primary outputs**
 
@@ -90,6 +92,8 @@ Landmark Transfer also provides two target-specific template-optimization backen
 - **FPFH + RANSAC**, the default feature-based SSM search; and
 - **Pose-marginalized EM**, an experimental initializer that evaluates global pose hypotheses while jointly refining SSM shape and similarity pose.
 
+When a canonical Model Library quartet is loaded (`ssm_data_<name>`, `<name>_template`, `<name>_template_correspondences`, and `<name>_template_sparse_landmarks`), Landmark Transfer fills only empty template and SSM selectors with the most recently loaded complete, point-count-compatible set. Manual selections and target-model selectors are left unchanged. Optimization-backend settings, **Rigid registration**, and **Deformation backend** start collapsed and expand only when requested.
+
 **Primary outputs**
 
 - predicted landmark `.mrk.json` files;
@@ -100,6 +104,8 @@ Landmark Transfer also provides two target-specific template-optimization backen
 ### Surface Segmentation
 
 Segments homologous anatomical regions across meshes using dense correspondence trajectories and graph-based clustering. It exports labeled surface models and a label lookup table.
+
+Across all modules, compact text states such as **Needs input**, **Ready**, **Optional**, and **Complete** accompany restrained color accents; the state remains available as text and accessibility metadata.
 
 ## Python dependencies
 
@@ -127,6 +133,15 @@ The Pose-marginalized EM backend is optional. The established FPFH + RANSAC temp
 - [Slicer Forum](https://discourse.slicer.org/) — use the *Morphology* or *Extensions* categories
 
 For errors, open **View > Error Log** in Slicer and include the relevant traceback and reproduction steps in the issue report.
+
+### 3D Slicer smoke-test checklist
+
+- [ ] Run Atlas Builder with Model Library save disabled, then enabled with a new valid name.
+- [ ] Decline and accept the overwrite prompt for an existing library entry; verify dense-export failure never triggers ingest.
+- [ ] Exercise **Needs input**, **Ready**, **Optional**, and **Complete** states across all four modules and confirm their accessible names include the state.
+- [ ] Load multiple canonical SSM sets, re-enter Landmark Transfer, and verify the latest complete point-count-compatible quartet fills only empty selectors.
+- [ ] Make manual template and SSM selections, re-enter the module, and verify they and all target-model selections remain unchanged.
+- [ ] Switch optimization backends and verify both backend boxes, **Rigid registration**, and **Deformation backend** remain collapsed until clicked.
 
 ## Troubleshooting
 

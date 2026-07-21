@@ -1,5 +1,6 @@
 import os
 import time
+import html
 from datetime import datetime
 from pathlib import Path
 import numpy as np
@@ -10,6 +11,20 @@ from scipy.spatial import cKDTree
 from scipy.sparse import coo_matrix, diags, eye as speye
 from scipy.sparse.linalg import splu
 
+
+def setWorkflowStatus(label, state, detail):
+  title, color = {
+    "needs_input": ("Needs input", "#c75b5b"),
+    "ready": ("Ready", "#4f9d69"),
+    "optional": ("Optional", "#c18b37"),
+    "complete": ("Complete", "#4f9d69"),
+  }[state]
+  safeDetail = html.escape(str(detail)).replace("\n", "<br>")
+  label.setTextFormat(qt.Qt.RichText)
+  label.setText(f'<span style="color:{color}; font-weight:600">{title}</span> — {safeDetail}')
+  label.setAccessibleName(f"{title}: {detail}")
+
+
 # =========================
 # Module + Widget
 # =========================
@@ -19,7 +34,7 @@ class MorphoWeaveAtlasBuilder(ScriptedLoadableModule):
     ScriptedLoadableModule.__init__(self, parent)
     self.parent.title = "Atlas Builder"
     self.parent.categories = ["MorphoWeave"]
-    self.parent.dependencies = []
+    self.parent.dependencies = ["MorphoWeaveModelLibrary"]
     self.parent.contributors = ["Arthur Porto"]
     self.parent.helpText = "Align meshes/landmarks to an atlas and export dense correspondences as .mrk.json"
     self.parent.helpText += self.getDefaultModuleDocumentationLink()
@@ -61,6 +76,23 @@ class MorphoWeaveAtlasBuilderWidget(ScriptedLoadableModuleWidget):
     reqLay.addRow("Model directory:", self.modelDir)
     reqLay.addRow("Landmark directory:", self.lmDir)
     reqLay.addRow("Output directory:", self.outDir)
+
+    self.librarySaveBox = ctk.ctkCollapsibleButton()
+    self.librarySaveBox.text = "Optional Model Library Save"
+    self.librarySaveBox.collapsed = True
+    libraryLay = qt.QFormLayout(self.librarySaveBox)
+    reqLay.addRow(self.librarySaveBox)
+    self.saveToLibraryCheck = qt.QCheckBox("Save SSM to Model Library after a successful run")
+    libraryLay.addRow(self.saveToLibraryCheck)
+    self.libraryNameEdit = qt.QLineEdit()
+    self.libraryNameEdit.enabled = False
+    self.libraryNameEdit.setPlaceholderText("Enter a unique model name")
+    libraryLay.addRow("Model name:", self.libraryNameEdit)
+    self.libraryPathLabel = qt.QLabel("")
+    self.libraryPathLabel.setWordWrap(True)
+    self.libraryPathLabel.setTextInteractionFlags(qt.Qt.TextSelectableByMouse)
+    libraryLay.addRow("Library location:", self.libraryPathLabel)
+
     self.prereqLabel = qt.QLabel("")
     self.prereqLabel.setWordWrap(True)
     reqLay.addRow(self.prereqLabel)
@@ -112,9 +144,12 @@ class MorphoWeaveAtlasBuilderWidget(ScriptedLoadableModuleWidget):
     self.previewBtn.clicked.connect(self._onPreview)
     for w in [self.atlasModelPath, self.atlasLMPath, self.modelDir, self.lmDir, self.outDir]:
       w.connect('validInputChanged(bool)', self._reeval)
+    self.saveToLibraryCheck.toggled.connect(self._onLibrarySaveToggled)
+    self.libraryNameEdit.textChanged.connect(self._reeval)
     self.runBtn.clicked.connect(self._onRun)
 
     self._previewPD = None
+    self._refreshLibraryPath()
     self._reeval()
 
   # ---------- UI helpers ----------
@@ -128,6 +163,40 @@ class MorphoWeaveAtlasBuilderWidget(ScriptedLoadableModuleWidget):
       qt.QApplication.processEvents()
       self._lastStatusProcessTs = now
 
+  def enter(self):
+    self._refreshLibraryPath()
+    self._reeval()
+
+  def _configuredLibraryPath(self):
+    settings = qt.QSettings()
+    newKey = "MorphoWeaveModelLibrary/databasePath"
+    legacyKey = "DATABASE/databasePath"
+    defaultPath = os.path.join(Path.home(), "Documents", "MorphoWeaveModels")
+    if settings.contains(newKey):
+      return str(settings.value(newKey, defaultPath))
+    if settings.contains(legacyKey):
+      path = str(settings.value(legacyKey, defaultPath))
+      settings.setValue(newKey, path)
+      return path
+    return defaultPath
+
+  def _refreshLibraryPath(self):
+    self.libraryRootPath = self._configuredLibraryPath()
+    if hasattr(self, "libraryPathLabel"):
+      self.libraryPathLabel.setText(self.libraryRootPath)
+
+  def _libraryName(self):
+    text = getattr(self.libraryNameEdit, "text", "")
+    return str(text() if callable(text) else text).strip()
+
+  def _onLibrarySaveToggled(self, enabled):
+    self.libraryNameEdit.enabled = bool(enabled)
+    self._refreshLibraryPath()
+    self._reeval()
+
+  def _libraryTargetPath(self):
+    return os.path.join(self.libraryRootPath, self._libraryName())
+
   def _toggleAtlasLoad(self):
     useLoad = self.loadAtlasRadio.isChecked()
     self.atlasBox.collapsed = not useLoad
@@ -138,17 +207,24 @@ class MorphoWeaveAtlasBuilderWidget(ScriptedLoadableModuleWidget):
   def _reeval(self, *args):
     atlasOK = self.createAtlasRadio.isChecked() or bool(self.atlasModelPath.currentPath and self.atlasLMPath.currentPath)
     ioOK    = bool(self.modelDir.currentPath and self.lmDir.currentPath and self.outDir.currentPath)
-    self.runBtn.enabled = bool(atlasOK and ioOK)
+    saveToLibrary = self.saveToLibraryCheck.isChecked()
+    libraryNameOK = (not saveToLibrary) or self.logic.isSafeLibraryName(self._libraryName())
+    self.runBtn.enabled = bool(atlasOK and ioOK and libraryNameOK)
     hasRef = (self.loadAtlasRadio.isChecked() and bool(self.atlasModelPath.currentPath)) or bool(self.modelDir.currentPath)
     self.previewBtn.enabled = hasRef
     if not atlasOK and not ioOK:
-      self.prereqLabel.setText("Status: BLOCKED - choose atlas source/files and input/output directories.")
+      setWorkflowStatus(self.prereqLabel, "needs_input", "Choose atlas source/files and input/output directories.")
     elif not atlasOK:
-      self.prereqLabel.setText("Status: BLOCKED - choose atlas creation mode or load atlas model + landmarks.")
+      setWorkflowStatus(self.prereqLabel, "needs_input", "Choose atlas creation mode or load atlas model and landmarks.")
     elif not ioOK:
-      self.prereqLabel.setText("Status: BLOCKED - select model, landmark, and output directories.")
+      setWorkflowStatus(self.prereqLabel, "needs_input", "Select model, landmark, and output directories.")
+    elif not libraryNameOK:
+      setWorkflowStatus(self.prereqLabel, "needs_input", "Enter a model name without path separators or reserved filename characters.")
     else:
-      self.prereqLabel.setText("Status: READY - required inputs are complete.")
+      detail = "Required inputs are complete."
+      if saveToLibrary:
+        detail += f" The SSM will be saved as '{self._libraryName()}'."
+      setWorkflowStatus(self.prereqLabel, "ready", detail)
     self._invalidatePreviewCache()
 
   def _invalidatePreviewCache(self, *_):
@@ -200,6 +276,19 @@ class MorphoWeaveAtlasBuilderWidget(ScriptedLoadableModuleWidget):
 
   def _onRun(self):
     logic = self.logic
+    saveToLibrary = self.saveToLibraryCheck.isChecked()
+    if saveToLibrary:
+      self._refreshLibraryPath()
+      libraryTarget = self._libraryTargetPath()
+      if os.path.exists(libraryTarget):
+        name = self._libraryName()
+        if not slicer.util.confirmOkCancelDisplay(
+          f"A Model Library entry named '{name}' already exists.\n\n"
+          "Continuing will overwrite files with matching names. Continue?"
+        ):
+          self._status("Run cancelled; the existing Model Library entry was not changed.")
+          return
+
     F = self._outFolders(self.outDir.currentPath)
     F['originalModels'] = self.modelDir.currentPath
     F['originalLMs']    = self.lmDir.currentPath
@@ -252,10 +341,42 @@ class MorphoWeaveAtlasBuilderWidget(ScriptedLoadableModuleWidget):
       dense_ok = False
       self._status(f"Dense export failed: {e}")
     slicer.mrmlScene.RemoveNode(atlasModel); slicer.mrmlScene.RemoveNode(atlasLMs)
+    library_ok = None
+    if dense_ok and saveToLibrary:
+      library_ok = self._saveSsmToLibrary(F)
     if dense_ok:
-      self._status(f"Completed. Output: {F['output']} (atlas/, population_correspondences/, alignedModels/, alignedLMs/)")
+      library_note = ""
+      if library_ok is True:
+        library_note = f" SSM saved to Model Library as '{self._libraryName()}'."
+      elif library_ok is False:
+        library_note = " Atlas outputs are complete, but the Model Library save failed."
+      self._status(f"Completed. Output: {F['output']} (atlas/, population_correspondences/, alignedModels/, alignedLMs/).{library_note}")
     else:
       self._status(f"Completed with warnings. Output: {F['output']} (atlas/, alignedModels/, alignedLMs/). Dense export did not finish.")
+
+  def _saveSsmToLibrary(self, F):
+    try:
+      from MorphoWeaveModelLibrary import MorphoWeaveModelLibraryLogic
+
+      os.makedirs(self.libraryRootPath, exist_ok=True)
+      target = self._libraryTargetPath()
+
+      def progress(value, text):
+        self._status(f"Model Library [{int(value)}%]: {text}")
+
+      success, message = MorphoWeaveModelLibraryLogic().ingestSSMDatabase(
+        dbPath=target,
+        templateModelPath=os.path.join(F["atlas"], "atlas_model.ply"),
+        templateLandmarksPath=os.path.join(F["atlas"], "atlas_dense_correspondences.mrk.json"),
+        sparseLandmarksPath=os.path.join(F["atlas"], "atlas_sparse_landmarks.mrk.json"),
+        populationDir=F["population_correspondences"],
+        progress_callback=progress,
+      )
+      self._status(message)
+      return bool(success)
+    except Exception as error:
+      self._status(f"Model Library save failed: {error}")
+      return False
 
   def _generateAtlas(self, F, useSimilarity, warp_method, allowFallback):
     logic = self.logic
@@ -289,6 +410,17 @@ class MorphoWeaveAtlasBuilderLogic(ScriptedLoadableModuleLogic):
   DENSE_MAX_POINTS = 300_000
   DENSE_MAX_TRIS   = 500_000
   DENSE_EDGE_FRAC  = 1e-3  # mean edge length < 0.1% of bbox diag
+
+  @staticmethod
+  def isSafeLibraryName(name):
+    name = str(name or "").strip()
+    if not name or name in {".", ".."} or name.endswith((".", " ")):
+      return False
+    if any(ord(char) < 32 or char in '<>:"/\\|?*' for char in name):
+      return False
+    stem = name.split(".", 1)[0].upper()
+    reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+    return stem not in reserved
 
   def __init__(self):
     super().__init__()
@@ -978,3 +1110,7 @@ class MorphoWeaveAtlasBuilderTest(ScriptedLoadableModuleTest):
   def runTest(self):
     self.setUp()
     self.assertIsNotNone(MorphoWeaveAtlasBuilderLogic())
+    self.assertTrue(MorphoWeaveAtlasBuilderLogic.isSafeLibraryName("mouse_atlas"))
+    self.assertTrue(MorphoWeaveAtlasBuilderLogic.isSafeLibraryName("Mouse Atlas 2026"))
+    for invalidName in ("", ".", "..", "../atlas", "atlas/model", "atlas\\model", "CON", "name."):
+      self.assertFalse(MorphoWeaveAtlasBuilderLogic.isSafeLibraryName(invalidName))

@@ -14,9 +14,9 @@ set(EXTENSION_DEPENDS "")
 find_package(Slicer REQUIRED)
 include(${Slicer_USE_FILE})
 
-add_subdirectory(MorphoWeaveLandmarkTransfer)
-add_subdirectory(MorphoWeaveAtlasBuilder)
 add_subdirectory(MorphoWeaveModelLibrary)
+add_subdirectory(MorphoWeaveAtlasBuilder)
+add_subdirectory(MorphoWeaveLandmarkTransfer)
 add_subdirectory(MorphoWeaveSurfaceSegmentation)
 
 include(${Slicer_EXTENSION_GENERATE_CONFIG})

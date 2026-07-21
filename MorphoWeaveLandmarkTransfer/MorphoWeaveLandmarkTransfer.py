@@ -1,32 +1,72 @@
-import os, logging, copy, json, importlib, time, numpy as np
+import os, logging, copy, json, time, html, numpy as np
 import vtk, qt, ctk, slicer
 from slicer.ScriptedLoadableModule import *
 import vtk.util.numpy_support as vtk_np
 
-try:
-    from Resources.Python.PoseEMTemplate import (
-        LEGACY_BACKEND,
-        POSE_EM_BACKEND,
-        PoseEMSettings,
-        coverage_prescale,
-        optimization_backend,
-        pose_em_enabled,
-        run_pose_em_registration,
-        ssm_sample,
-    )
-except ImportError:
-    from .Resources.Python.PoseEMTemplate import (
-        LEGACY_BACKEND,
-        POSE_EM_BACKEND,
-        PoseEMSettings,
-        coverage_prescale,
-        optimization_backend,
-        pose_em_enabled,
-        run_pose_em_registration,
-        ssm_sample,
-    )
+
+from Resources.Python.PoseEMTemplate import (
+    LEGACY_BACKEND,
+    POSE_EM_BACKEND,
+    PoseEMSettings,
+    coverage_prescale,
+    optimization_backend,
+    pose_em_enabled,
+    run_pose_em_registration,
+    ssm_sample,
+)
 
 # ---------- Small utilities----------
+
+def setWorkflowStatus(label, state, detail):
+  title, color = {
+    "needs_input": ("Needs input", "#c75b5b"),
+    "ready": ("Ready", "#4f9d69"),
+    "optional": ("Optional", "#c18b37"),
+    "complete": ("Complete", "#4f9d69"),
+  }[state]
+  safeDetail = html.escape(str(detail)).replace("\n", "<br>")
+  label.setTextFormat(qt.Qt.RichText)
+  label.setText(f'<span style="color:{color}; font-weight:600">{title}</span> — {safeDetail}')
+  label.setAccessibleName(f"{title}: {detail}")
+
+def canonical_ssm_node_names(database_name):
+  return {
+    "table": f"ssm_data_{database_name}",
+    "model": f"{database_name}_template",
+    "dense": f"{database_name}_template_correspondences",
+    "sparse": f"{database_name}_template_sparse_landmarks",
+  }
+
+def latest_complete_ssm_set(tables, models, landmarks):
+  models_by_name = {node.GetName(): node for node in models}
+  landmarks_by_name = {node.GetName(): node for node in landmarks}
+  for table in reversed(list(tables)):
+    table_name = table.GetName() or ""
+    if not table_name.startswith("ssm_data_"):
+      continue
+    database_name = table_name[len("ssm_data_"):]
+    names = canonical_ssm_node_names(database_name)
+    model = models_by_name.get(names["model"])
+    dense = landmarks_by_name.get(names["dense"])
+    sparse = landmarks_by_name.get(names["sparse"])
+    if not all((database_name, model, dense, sparse)):
+      continue
+    try:
+      expected_points = int(table.GetAttribute("ssm_npoints") or "")
+    except (TypeError, ValueError):
+      continue
+    if expected_points > 0 and dense.GetNumberOfControlPoints() == expected_points:
+      return {"table": table, "model": model, "dense": dense, "sparse": sparse}
+  return None
+
+def fill_empty_selectors(selector_nodes):
+  changed = False
+  for selector, node in selector_nodes:
+    if selector.currentNode() is None:
+      selector.setCurrentNode(node)
+      changed = True
+  return changed
+
 COLORS = {"red":(1,0.2,0.2), "green":(0.2,1,0.2), "blue":(0.2,0.2,1)}
 
 def np_to_vtk_mat(M):
@@ -216,9 +256,9 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
     {"key":"lambda_reg","kind":"dspin","label":"SSM weight (lambda_reg)","section":"PCA-CPD registration","min":0.0,"max":5.0,"step":0.01,"value":0.01}
   ]
 
-  def _make_selector(self, types, attr_key=None, attr_val=None, tooltip=None, none=False):
+  def _make_selector(self, types, attr_key=None, attr_val=None, tooltip=None, none=True, select_new=False):
     sel = slicer.qMRMLNodeComboBox()
-    sel.nodeTypes = types; sel.selectNodeUponCreation=True
+    sel.nodeTypes = types; sel.selectNodeUponCreation=bool(select_new)
     sel.addEnabled=False; sel.removeEnabled=False; sel.noneEnabled=bool(none)
     sel.setMRMLScene(slicer.mrmlScene)
     if attr_key:
@@ -233,7 +273,10 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
     sections={}
     def section(name):
       if name not in sections:
-        cb=ctk.ctkCollapsibleButton(); cb.text=name; layout.addRow(cb); sections[name]=qt.QFormLayout(cb)
+        cb=ctk.ctkCollapsibleButton(); cb.text=name
+        if name in ("Rigid registration", "Deformation backend"):
+          cb.collapsed = True
+        layout.addRow(cb); sections[name]=qt.QFormLayout(cb)
       return sections[name]
     for p in self.PARAMS:
       kind=p["kind"]; lab=p["label"]; key=p["key"]; sec=p["section"]; v=p.get("value")
@@ -365,9 +408,9 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
     self.singlePrereqLabel.setWordWrap(True)
     singleL.addRow(self.singlePrereqLabel)
     self.sourceModelSelector            = self._make_selector(["vtkMRMLModelNode"]) ; singleL.addRow("Template model:", self.sourceModelSelector)
-    self.sourceFiducialSelector         = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; singleL.addRow("Template Correspondences:", self.sourceFiducialSelector)
-    self.sourceSparseFiducialSelector   = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; singleL.addRow("Template Landmarks:", self.sourceSparseFiducialSelector)
-    self.targetModelSelector            = self._make_selector(["vtkMRMLModelNode"]) ; singleL.addRow("Target model:", self.targetModelSelector)
+    self.sourceFiducialSelector         = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; singleL.addRow("Template correspondences:", self.sourceFiducialSelector)
+    self.sourceSparseFiducialSelector   = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; singleL.addRow("Template landmarks:", self.sourceSparseFiducialSelector)
+    self.targetModelSelector            = self._make_selector(["vtkMRMLModelNode"], select_new=True) ; singleL.addRow("Target model:", self.targetModelSelector)
     self.ssmTableSelector               = self._make_selector(["vtkMRMLTableNode"], attr_key="ssm_eigenvalues", attr_val=None, tooltip="If you have an SSM table loaded, select it here to use PCA-CPD.") ; singleL.addRow("SSM Data Table:", self.ssmTableSelector)
     self.subsampleButton=qt.QPushButton("1) Subsample source/target"); self.subsampleButton.enabled=False; singleL.addRow(self.subsampleButton)
     self.subsampleInfo=qt.QPlainTextEdit(); self.subsampleInfo.setPlaceholderText("Subsampling information"); self.subsampleInfo.setReadOnly(True); singleL.addRow(self.subsampleInfo)
@@ -385,7 +428,7 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
     self.batchPrereqLabel.setWordWrap(True)
     multiL.addRow(self.batchPrereqLabel)
     self.sourceModelMultiSelector          = self._make_selector(["vtkMRMLModelNode"]) ; multiL.addRow("Source mesh:", self.sourceModelMultiSelector)
-    self.sourceFiducialMultiSelector       = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; multiL.addRow("Source Correspondences:", self.sourceFiducialMultiSelector)
+    self.sourceFiducialMultiSelector       = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; multiL.addRow("Source correspondences:", self.sourceFiducialMultiSelector)
     self.sourceSparseFiducialMultiSelector = self._make_selector(["vtkMRMLMarkupsFiducialNode"]) ; multiL.addRow("Source landmarks:", self.sourceSparseFiducialMultiSelector)
     self.targetModelMultiSelector=ctk.ctkPathLineEdit(); self.targetModelMultiSelector.filters=ctk.ctkPathLineEdit.Dirs; multiL.addRow("Target mesh directory:", self.targetModelMultiSelector)
     self.landmarkOutputSelector=ctk.ctkPathLineEdit(); self.landmarkOutputSelector.filters=ctk.ctkPathLineEdit.Dirs; multiL.addRow("Target output landmark directory:", self.landmarkOutputSelector)
@@ -397,7 +440,7 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
     self.smoothExportedMeshesBatchChk.setToolTip("Apply cosmetic smoothing only to the saved mesh files. Landmark predictions are unchanged.")
     self.smoothExportedMeshesBatchChk.enabled=False
     multiL.addRow(self.smoothExportedMeshesBatchChk)
-    self.ssmTableMultiSelector = self._make_selector(["vtkMRMLTableNode"], attr_key="ssm_eigenvalues", attr_val=None, tooltip="Select the SSM table.", none=False); multiL.addRow("SSM Data Table:", self.ssmTableMultiSelector)
+    self.ssmTableMultiSelector = self._make_selector(["vtkMRMLTableNode"], attr_key="ssm_eigenvalues", attr_val=None, tooltip="Select the SSM table."); multiL.addRow("SSM Data Table:", self.ssmTableMultiSelector)
     self.skipOptBatchChk = qt.QCheckBox("Skip template optimization"); self.skipOptBatchChk.setToolTip("Skip the selected target-specific template initialization backend.");multiL.addRow(self.skipOptBatchChk)
     self.batchBackendLabel = qt.QLabel("")
     self.batchBackendLabel.setWordWrap(True)
@@ -414,9 +457,9 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
     self.optimizePrereqLabel.setWordWrap(True)
     optL.addRow(self.optimizePrereqLabel)
     self.d2sourceModelSelector          = self._make_selector(["vtkMRMLModelNode"]); optL.addRow("Template model:", self.d2sourceModelSelector)
-    self.d2sourceFiducialSelector       = self._make_selector(["vtkMRMLMarkupsFiducialNode"]); optL.addRow("Template Correspondences:", self.d2sourceFiducialSelector)
-    self.d2sourceSparseFiducialSelector = self._make_selector(["vtkMRMLMarkupsFiducialNode"]); optL.addRow("Template Landmarks:", self.d2sourceSparseFiducialSelector)
-    self.d2targetModelSelector          = self._make_selector(["vtkMRMLModelNode"]); optL.addRow("Target model:", self.d2targetModelSelector)
+    self.d2sourceFiducialSelector       = self._make_selector(["vtkMRMLMarkupsFiducialNode"]); optL.addRow("Template correspondences:", self.d2sourceFiducialSelector)
+    self.d2sourceSparseFiducialSelector = self._make_selector(["vtkMRMLMarkupsFiducialNode"]); optL.addRow("Template landmarks:", self.d2sourceSparseFiducialSelector)
+    self.d2targetModelSelector          = self._make_selector(["vtkMRMLModelNode"], select_new=True); optL.addRow("Target model:", self.d2targetModelSelector)
     self.d2ssmTableSelector             = self._make_selector(["vtkMRMLTableNode"], attr_key="ssm_eigenvalues", attr_val=None); optL.addRow("SSM Data Table:", self.d2ssmTableSelector)
     self.optimizationBackendCombo = qt.QComboBox()
     self.optimizationBackendCombo.addItem("FPFH + RANSAC (current)")
@@ -424,12 +467,12 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
     self.optimizationBackendCombo.setToolTip("Select the target-specific template initialization method. The current method remains the default.")
     optL.addRow("Optimization backend:", self.optimizationBackendCombo)
 
-    self.legacyOptimizationBox=ctk.ctkCollapsibleButton(); self.legacyOptimizationBox.text="FPFH + RANSAC settings"; self.legacyOptimizationBox.collapsed=False
+    self.legacyOptimizationBox=ctk.ctkCollapsibleButton(); self.legacyOptimizationBox.text="FPFH + RANSAC settings"; self.legacyOptimizationBox.collapsed=True
     legacyOptL=qt.QFormLayout(self.legacyOptimizationBox); optL.addRow(self.legacyOptimizationBox)
     self.pcGridSteps=qt.QSpinBox(); self.pcGridSteps.minimum=2; self.pcGridSteps.maximum=35; self.pcGridSteps.value=4; self.pcGridSteps.setToolTip("Number of leading SSM modes searched by the current optimizer."); legacyOptL.addRow("SSM modes searched:", self.pcGridSteps)
     self.ransacItersPerCand=qt.QSpinBox(); self.ransacItersPerCand.minimum=10000; self.ransacItersPerCand.maximum=2000000; self.ransacItersPerCand.singleStep=10000; self.ransacItersPerCand.value=300000; legacyOptL.addRow("RANSAC iters (per candidate):", self.ransacItersPerCand)
 
-    self.poseOptimizationBox=ctk.ctkCollapsibleButton(); self.poseOptimizationBox.text="Experimental pose-EM settings"; self.poseOptimizationBox.collapsed=False
+    self.poseOptimizationBox=ctk.ctkCollapsibleButton(); self.poseOptimizationBox.text="Experimental pose-EM settings"; self.poseOptimizationBox.collapsed=True
     poseOptL=qt.QFormLayout(self.poseOptimizationBox); optL.addRow(self.poseOptimizationBox)
     poseHelp=qt.QLabel("The defaults below match biocpd's real-data registration configuration: trajectory scoring, all coarse poses retained, and full-source refinement. Only the selected SSM shape is applied to the template; standard scaling, rigid alignment, and deformable registration still run afterward.")
     poseHelp.setWordWrap(True); poseOptL.addRow(poseHelp)
@@ -508,10 +551,61 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
 
     self.optimizeButton.clicked.connect(self.onOptimize)
 
+    self._autoSelectCanonicalSsmSet()
     self.onSelect(); self.onSelectMultiProcess(); self._enable_optimize(); self.parameterDictionary=self._read_params(); self._onOptimizationBackendChanged()
     self.layout.addStretch(1)
 
   # ----- Small helpers -----
+  @staticmethod
+  def canonicalSsmNodeNames(databaseName):
+    return canonical_ssm_node_names(databaseName)
+
+  def _sceneNodesByClass(self, className):
+    collection = slicer.mrmlScene.GetNodesByClass(className)
+    collection.UnRegister(None)
+    return [collection.GetItemAsObject(index) for index in range(collection.GetNumberOfItems())]
+
+  def _latestCompleteSsmSet(self):
+    return latest_complete_ssm_set(
+      self._sceneNodesByClass("vtkMRMLTableNode"),
+      self._sceneNodesByClass("vtkMRMLModelNode"),
+      self._sceneNodesByClass("vtkMRMLMarkupsFiducialNode"),
+    )
+
+  def _autoSelectCanonicalSsmSet(self):
+    ssmSet = self._latestCompleteSsmSet()
+    if not ssmSet:
+      return False
+    selectorNodes = (
+      (self.sourceModelSelector, ssmSet["model"]),
+      (self.sourceFiducialSelector, ssmSet["dense"]),
+      (self.sourceSparseFiducialSelector, ssmSet["sparse"]),
+      (self.ssmTableSelector, ssmSet["table"]),
+      (self.sourceModelMultiSelector, ssmSet["model"]),
+      (self.sourceFiducialMultiSelector, ssmSet["dense"]),
+      (self.sourceSparseFiducialMultiSelector, ssmSet["sparse"]),
+      (self.ssmTableMultiSelector, ssmSet["table"]),
+      (self.d2sourceModelSelector, ssmSet["model"]),
+      (self.d2sourceFiducialSelector, ssmSet["dense"]),
+      (self.d2sourceSparseFiducialSelector, ssmSet["sparse"]),
+      (self.d2ssmTableSelector, ssmSet["table"]),
+    )
+    blockers = []
+    try:
+      for selector, node in selectorNodes:
+        if selector.currentNode() is None:
+          blockers.append(qt.QSignalBlocker(selector))
+      changed = fill_empty_selectors(selectorNodes)
+    finally:
+      blockers.clear()
+    return changed
+
+  def enter(self):
+    self._autoSelectCanonicalSsmSet()
+    self.onSelect()
+    self.onSelectMultiProcess()
+    self._enable_optimize()
+
   def updateLayout(self, focusNode=None, keepOrientation=True, margin=1.15):
       lm = slicer.app.layoutManager()
       if lm.layout != 9:
@@ -525,11 +619,11 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
     self.subsampleButton.enabled = ready
     has_ssm = self.ssmTableSelector.currentNode() is not None
     if not ready:
-      self.singlePrereqLabel.setText("Status: BLOCKED - select template model, correspondences, sparse landmarks, and target model.")
+      setWorkflowStatus(self.singlePrereqLabel, "needs_input", "Select template model, correspondences, sparse landmarks, and target model.")
     elif not has_ssm:
-      self.singlePrereqLabel.setText("Status: PARTIAL - rigid stage ready; select SSM Data Table to enable deformable stage.")
+      setWorkflowStatus(self.singlePrereqLabel, "optional", "Rigid stage is ready. Select an SSM Data Table for deformable alignment.")
     else:
-      self.singlePrereqLabel.setText("Status: READY - all prerequisites for single-run pipeline are available.")
+      setWorkflowStatus(self.singlePrereqLabel, "ready", "Single-run prerequisites are available.")
 
   def _enable_batch(self):
     needs_mesh_output = bool(self.saveWarpedMeshesBatchChk.checked)
@@ -539,11 +633,11 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
                  (not needs_mesh_output) or bool(self.meshOutputSelector.currentPath))
     self.applyLandmarkMultiButton.enabled = ready
     if ready:
-      self.batchPrereqLabel.setText("Status: READY - batch prerequisites are satisfied.")
+      setWorkflowStatus(self.batchPrereqLabel, "ready", "Batch prerequisites are available.")
     elif needs_mesh_output:
-      self.batchPrereqLabel.setText("Status: BLOCKED - select source nodes, SSM table, target directory, landmark output directory, and warped mesh output directory.")
+      setWorkflowStatus(self.batchPrereqLabel, "needs_input", "Select source nodes, SSM table, target directory, landmark output directory, and warped mesh output directory.")
     else:
-      self.batchPrereqLabel.setText("Status: BLOCKED - select source nodes, SSM table, target directory, and output directory.")
+      setWorkflowStatus(self.batchPrereqLabel, "needs_input", "Select source nodes, SSM table, target directory, and output directory.")
 
   def _onBatchMeshExportToggled(self, checked):
     enabled = bool(checked)
@@ -560,9 +654,9 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
     ])
     self.optimizeButton.enabled = ready
     if ready:
-      self.optimizePrereqLabel.setText("Status: READY - optimization prerequisites are satisfied.")
+      setWorkflowStatus(self.optimizePrereqLabel, "ready", "Optimization prerequisites are available.")
     else:
-      self.optimizePrereqLabel.setText("Status: BLOCKED - select template model/correspondences, target model, and SSM table.")
+      setWorkflowStatus(self.optimizePrereqLabel, "needs_input", "Select template model, correspondences, target model, and SSM table.")
 
   def ensureCloneFolder(self, label=None):
     shNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLSubjectHierarchyNode")
@@ -622,9 +716,12 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
         self.CPDRegistrationButton.enabled = False
     else:
       self.CPDRegistrationButton.setToolTip("")
-    if src: self.sourceModelMultiSelector.setCurrentNode(src)
-    if lm: self.sourceSparseFiducialMultiSelector.setCurrentNode(lm)
-    if slm: self.sourceFiducialMultiSelector.setCurrentNode(slm)
+    if src and self.sourceModelMultiSelector.currentNode() is None:
+      self.sourceModelMultiSelector.setCurrentNode(src)
+    if lm and self.sourceSparseFiducialMultiSelector.currentNode() is None:
+      self.sourceSparseFiducialMultiSelector.setCurrentNode(lm)
+    if slm and self.sourceFiducialMultiSelector.currentNode() is None:
+      self.sourceFiducialMultiSelector.setCurrentNode(slm)
 
   def onCancelBatch(self):
     self._cancelBatch = True; self.batchCancelButton.enabled = False
@@ -644,7 +741,7 @@ class MorphoWeaveLandmarkTransferWidget(ScriptedLoadableModuleWidget):
     self.clearCloneFolder(); run_label = f"{srcOrig.GetName()}→{tgtOrig.GetName()}"; self.ensureCloneFolder(label=run_label)
     self.srcTemp = self.cloneNode(srcOrig, customName="Source")
     self.tgtTemp = self.cloneNode(tgtOrig, customName="Target")
-    self.corresTemp  = self.cloneNode(corresOrig,  customName="Source Correspondences")
+    self.corresTemp  = self.cloneNode(corresOrig,  customName="Source correspondences")
     self.lmTemp  = self.cloneNode(lmOrig,  customName="Landmarks")
     if not self.parameterDictionary.get("skipScaling", False):
         cov=float(self.parameterDictionary.get("targetCoverage",1.0))

@@ -5,7 +5,9 @@
 <p align="center"><strong>Weaving biological form into a common geometric language</strong></p>
 
 <p align="center">
-  <a href="Docs/Media/atlas_hero_16x9.mp4"><strong>Watch MorphoWeave in action (MP4)</strong></a>
+  <a href="https://youtu.be/OA_bfRgbKGs">
+    <img src="https://img.youtube.com/vi/OA_bfRgbKGs/maxresdefault.jpg" alt="Watch MorphoWeave in action" width="720">
+  </a>
 </p>
 
 <p align="center">

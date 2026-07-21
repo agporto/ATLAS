@@ -5,9 +5,7 @@
 <p align="center"><strong>Weaving biological form into a common geometric language</strong></p>
 
 <p align="center">
-  <a href="https://youtu.be/OA_bfRgbKGs">
-    <img src="https://img.youtube.com/vi/OA_bfRgbKGs/maxresdefault.jpg" alt="Watch MorphoWeave in action" width="720">
-  </a>
+  <img src="Docs/Media/morphoweave.gif" alt="MorphoWeave statistical shape space animation" width="720">
 </p>
 
 <p align="center">

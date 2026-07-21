@@ -16,11 +16,11 @@
 
 </p>
 
+## Overview
+
 <p align="center">
   <img src="Docs/Media/morphoweave.gif" alt="MorphoWeave statistical shape space animation" width="720">
 </p>
-
-## Overview
 
 MorphoWeave provides an integrated workflow for generating and applying 3D anatomical atlases. It supports:
 

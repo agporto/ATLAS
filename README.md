@@ -11,7 +11,7 @@
 <p align="center">
   <a href="tutorial/README.md"><strong>Tutorial</strong></a> ·
   <a href="https://github.com/agporto/SlicerMorphoWeave/issues"><strong>Issues</strong></a> ·
-  <a href="https://discourse.slicer.org/"><strong>Slicer Forum</strong></a>
+  <a href="https://discourse.slicer.org/"><strong>Slicer Forum</strong></a> ·
   <a href="https://youtu.be/OA_bfRgbKGs"><strong>Video</strong></a>
 
 </p>

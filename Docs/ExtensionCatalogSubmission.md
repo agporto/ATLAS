@@ -9,7 +9,7 @@ Before opening the ExtensionsIndex pull request:
 - Add the GitHub topic `3d-slicer-extension` to the SlicerMorphoWeave repository.
 - Keep `SlicerMorph` documented as a complementary extension, not a build dependency.
 - Confirm that the renamed module icons load and that `EXTENSION_ICONURL` resolves from the `main` branch.
-- Add a tracked MorphoWeave screenshot, then populate and verify `EXTENSION_SCREENSHOTURLS` in the top-level `CMakeLists.txt`. This value remains empty until the asset exists.
+- Confirm that `EXTENSION_SCREENSHOTURLS` resolves to `tutorial/images/20.png` from the `main` branch.
 - Merge this publication-preparation branch into `main`.
 
 ## Catalog entry

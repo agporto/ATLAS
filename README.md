@@ -129,8 +129,8 @@ The Pose-marginalized EM backend is optional. The established FPFH + RANSAC temp
 ## Related 3D Slicer extensions
 
 - [SlicerMorph](https://slicermorph.org/) provides the broader digital-morphology ecosystem, including landmark editing, geometric morphometrics, and ALPACA/MALPACA point-cloud landmark-transfer workflows. MorphoWeave complements it with explicit atlas construction, persisted statistical shape models, shape-model-guided transfer, and correspondence-guided segmentation.
-- [SlicerDeCA](https://github.com/SlicerMorph/SlicerDeCA) creates dense surface correspondences and supports dense shape analysis. MorphoWeave's Atlas Builder originated from its DeCAL workflow and now feeds an integrated atlas-to-SSM-to-transfer pipeline.
-- Slicer's **Surface Toolbox** supports mesh repair, smoothing, decimation, and related preprocessing that may be useful before running MorphoWeave.
+- [SlicerDenseCorrespondenceAnalysis](https://github.com/SlicerMorph/SlicerDenseCorrespondenceAnalysis) creates dense surface correspondences and supports dense shape analysis. MorphoWeave's Atlas Builder originated from its DeCAL workflow and now feeds an integrated atlas-to-SSM-to-transfer pipeline.
+- SlicerMorph's **Surface Toolbox** supports mesh repair, smoothing, decimation, and related preprocessing that may be useful before running MorphoWeave.
 
 ## Documentation and support
 

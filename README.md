@@ -142,16 +142,6 @@ The Pose-marginalized EM backend is optional. The established FPFH + RANSAC temp
 
 For errors, open **View > Error Log** in Slicer and include the relevant traceback and reproduction steps in the issue report.
 
-### 3D Slicer smoke-test checklist
-
-- [ ] Run Atlas Builder with Model Library save disabled, then enabled with a new valid name.
-- [ ] Run Atlas Builder with aligned-output retention enabled and disabled; confirm input files remain untouched and disabled runs omit `alignedModels/` and `alignedLMs/`.
-- [ ] Decline and accept the overwrite prompt for an existing library entry; verify dense-export failure never triggers ingest.
-- [ ] Exercise **Needs input**, **Ready**, **Optional**, and **Complete** states across all four modules and confirm their accessible names include the state.
-- [ ] Load multiple canonical SSM sets, re-enter Landmark Transfer, and verify the latest complete point-count-compatible quartet fills only empty selectors.
-- [ ] Make manual template and SSM selections, re-enter the module, and verify they and all target-model selections remain unchanged.
-- [ ] Switch optimization backends and verify both backend boxes, **Rigid registration**, and **Deformation backend** remain collapsed until clicked.
-
 ## Troubleshooting
 
 | Issue | Likely cause | Suggested action |
